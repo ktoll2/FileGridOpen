@@ -1,0 +1,146 @@
+name: Release
+
+# Manual only: this never runs on push or pull_request. Builds the extension through the
+# Makefile, at exactly whatever version the repo-root VERSION file holds (bumped by hand before
+# triggering a release). vscode's Makefile's `package` target passes it straight through to
+# `vsce package <version>` (which updates package.json and package-lock.json itself via
+# `npm version`). The release tag and the "version must increase" check work off that same value;
+# a prerelease's tag gets a run-number suffix for uniqueness, but the packaged version itself is
+# never modified. Choose "release" or "prerelease" to also publish the .vsix to a GitHub release.
+# Choosing "release" additionally publishes to the VS Code Marketplace and Open VSX, but only for
+# whichever of the two has its PAT secret (VSCE_PAT / OVSX_PAT) set on the repo - missing either
+# one just skips that marketplace instead of failing the run.
+on:
+  workflow_dispatch:
+    inputs:
+      release:
+        description: "Publish a GitHub release for this build?"
+        type: choice
+        options:
+          - none
+          - prerelease
+          - release
+        default: none
+
+permissions:
+  contents: write
+
+jobs:
+  vscode:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Determine version
+        id: version
+        run: |
+          baseVersion="$(make current-version)"
+
+          if [ "${{ inputs.release }}" = "prerelease" ]; then
+            echo "tag=v$baseVersion-pre.${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+          elif [ "${{ inputs.release }}" = "release" ]; then
+            git fetch --tags --quiet
+            lastTag="$(git tag --list 'v*' | sed 's/^v//' | grep -E '^[0-9]+(\.[0-9]+){2,3}$' | sort -V | tail -n1)"
+
+            if [ -n "$lastTag" ] && ! printf '%s\n%s\n' "$lastTag" "$baseVersion" | sort -VC; then
+              echo "VERSION ($baseVersion) must be greater than the last release ($lastTag). Bump the VERSION file before releasing." >&2
+              exit 1
+            fi
+
+            echo "tag=v$baseVersion" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=" >> "$GITHUB_OUTPUT"
+          fi
+
+          echo "Version $baseVersion"
+
+      - name: Install dependencies
+        run: make ci
+
+      - name: Build and test
+        run: make test
+
+      - name: Package
+        run: make package
+
+      - name: Upload VSIX artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: file-grid-open-VSIX
+          path: "*.vsix"
+          if-no-files-found: error
+
+  # Only runs once the build job above has succeeded, so a failure in the build or package step
+  # skips this entirely - no release is ever published without a working .vsix attached.
+  github-release:
+    needs: vscode
+    if: inputs.release != 'none'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download VSIX artifact
+        uses: actions/download-artifact@v7
+        with:
+          name: file-grid-open-VSIX
+          path: dist
+
+      - name: Compute checksum
+        id: hash
+        run: |
+          vsix="$(find dist -name '*.vsix' | head -n1)"
+          echo "vsix=$(basename "$vsix")" >> "$GITHUB_OUTPUT"
+          echo "sha=$(sha256sum "$vsix" | awk '{print $1}')" >> "$GITHUB_OUTPUT"
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ needs.vscode.outputs.tag }}
+          name: ${{ needs.vscode.outputs.tag }}
+          prerelease: ${{ inputs.release == 'prerelease' }}
+          generate_release_notes: true
+          append_body: true
+          body: |
+            ---
+            `${{ steps.hash.outputs.vsix }}` SHA-256: `${{ steps.hash.outputs.sha }}`
+          fail_on_unmatched_files: true
+          files: dist/*.vsix
+
+  # Only runs for a full "release" (not "prerelease" or "none"), and only once the build job has
+  # succeeded. Each marketplace publish step skips itself if its PAT secret isn't set, rather than
+  # failing the run - so this is safe to leave enabled before either secret has been added.
+  marketplace-publish:
+    needs: vscode
+    if: inputs.release == 'release'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download VSIX artifact
+        uses: actions/download-artifact@v7
+        with:
+          name: file-grid-open-VSIX
+          path: dist
+
+      - name: Publish to VS Code Marketplace
+        if: env.VSCE_PAT != ''
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+        run: npx --yes @vscode/vsce publish --packagePath dist/*.vsix
+
+      - name: Publish to Open VSX
+        if: env.OVSX_PAT != ''
+        env:
+          OVSX_PAT: ${{ secrets.OVSX_PAT }}
+        run: npx --yes ovsx publish dist/*.vsix -p "$OVSX_PAT"

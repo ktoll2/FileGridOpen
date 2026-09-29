@@ -1,0 +1,130 @@
+{
+  "name": "file-grid-open",
+  "displayName": "FileGridOpen",
+  "description": "Open a configured set of files side by side, with layout you control",
+  "version": "0.0.1",
+  "publisher": "your-publisher-id",
+  "license": "MIT",
+  "icon": "resources/marketplace-icon.png",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/your-github-username/file-grid-open.git"
+  },
+  "bugs": {
+    "url": "https://github.com/your-github-username/file-grid-open/issues"
+  },
+  "homepage": "https://github.com/your-github-username/file-grid-open#readme",
+  "keywords": [
+    "file grid open",
+    "side by side",
+    "layout",
+    "editor groups",
+    "productivity"
+  ],
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onView:fileGridOpenSets"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "fileGridOpen.openSet",
+        "title": "FileGridOpen: Open File Set"
+      },
+      {
+        "command": "fileGridOpen.editConfig",
+        "title": "FileGridOpen: Edit Configuration",
+        "icon": "$(edit)"
+      },
+      {
+        "command": "fileGridOpen.editConfigJson",
+        "title": "FileGridOpen: Edit Configuration (JSON)"
+      },
+      {
+        "command": "fileGridOpen.refresh",
+        "title": "FileGridOpen: Refresh",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "fileGridOpen.addToSet",
+        "title": "Add to FileGridOpen Set..."
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "fileGridOpen",
+          "title": "FileGridOpen",
+          "icon": "resources/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "fileGridOpen": [
+        {
+          "id": "fileGridOpenSets",
+          "name": "File Sets"
+        }
+      ]
+    },
+    "viewsWelcome": [
+      {
+        "view": "fileGridOpenSets",
+        "contents": "No file sets configured.\n[Edit Configuration](command:fileGridOpen.editConfig)\n\nSets live in a per-workspace JSON file under your user config directory, not in the project."
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "fileGridOpen.editConfig",
+          "when": "view == fileGridOpenSets",
+          "group": "navigation@1"
+        },
+        {
+          "command": "fileGridOpen.refresh",
+          "when": "view == fileGridOpenSets",
+          "group": "navigation@2"
+        }
+      ],
+      "explorer/context": [
+        {
+          "command": "fileGridOpen.addToSet",
+          "when": "!explorerResourceIsFolder",
+          "group": "7_fileGridOpen"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "FileGridOpen",
+      "properties": {
+        "fileGridOpen.configPath": {
+          "type": "string",
+          "default": "",
+          "scope": "resource",
+          "markdownDescription": "Where this workspace's file-set config lives. Leave empty to use the default (a per-user config directory, outside the project). A relative path resolves against the workspace folder; `~` expands to your home directory."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -p ./ --watch",
+    "pretest": "npm run compile",
+    "test": "node --test \"out/test/**/*.test.js\"",
+    "package": "vsce package"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.85.0",
+    "@vscode/vsce": "^2.32.0",
+    "ovsx": "^1.2.0",
+    "typescript": "^5.5.0"
+  }
+}
