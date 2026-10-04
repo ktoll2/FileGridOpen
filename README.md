@@ -3,8 +3,6 @@
 <img src="resources/marketplace-icon.png" align="left" width="120" alt="File Grid Open logo">
 
 [![Build](https://github.com/ktoll2/FileGridOpen/actions/workflows/release.yml/badge.svg)](https://github.com/ktoll2/FileGridOpen/actions/workflows/release.yml)
-[![VS Code Marketplace](https://img.shields.io/visual-studio-marketplace/v/KirkTolleshaug.FileGridOpen?label=VS%20Code%20Marketplace&logo=visualstudiocode)](https://marketplace.visualstudio.com/items?itemName=KirkTolleshaug.FileGridOpen)
-[![Open VSX](https://img.shields.io/open-vsx/v/KirkTolleshaug/FileGridOpen?label=Open%20VSX)](https://open-vsx.org/extension/KirkTolleshaug/FileGridOpen)
 [![Latest release](https://img.shields.io/github/v/release/ktoll2/FileGridOpen?display_name=tag&logo=github)](https://github.com/ktoll2/FileGridOpen/releases/latest)
 [![Prerelease](https://img.shields.io/github/v/release/ktoll2/FileGridOpen?include_prereleases&display_name=tag&filter=*-pre&label=prerelease)](https://github.com/ktoll2/FileGridOpen/releases)
 [![License: MIT](https://img.shields.io/github/license/ktoll2/FileGridOpen)](LICENSE)
