@@ -3,7 +3,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { after, beforeEach, test } from 'node:test';
-import { ensureConfigFile, readFileSets, writeFileSets } from '../core/configFile';
+import { ensureConfigFile, readFileSets, readFileSetsEnsuringIds, writeFileSets } from '../core/configFile';
 
 const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'file-grid-open-test-'));
 let configPath: string;
@@ -94,4 +94,53 @@ test('writeFileSets then readFileSets round-trips, omitting unset column/row', (
 
 	const onDisk = JSON.parse(fs.readFileSync(configPath, 'utf8'));
 	assert.deepEqual(Object.keys(onDisk[0].paths[1]), ['path']);
+});
+
+test('writeFileSets then readFileSets preserves a set id', () => {
+	writeFileSets(configPath, [{ id: 'abc', name: 'Set', paths: [] }]);
+	assert.deepEqual(readFileSets(configPath), [{ id: 'abc', name: 'Set', paths: [] }]);
+});
+
+test('readFileSetsEnsuringIds: generates unique ids for sets without one and persists them', () => {
+	fs.mkdirSync(path.dirname(configPath), { recursive: true });
+	fs.writeFileSync(configPath, JSON.stringify([{ id: 'keep', name: 'A', paths: [] }, { name: 'B', paths: [] }, { name: 'B', paths: [] }]));
+
+	const first = readFileSetsEnsuringIds(configPath);
+	assert.equal(first[0].id, 'keep');
+	assert.ok(first[1].id && first[2].id && first[1].id !== first[2].id);
+
+	// A second read returns the same ids, i.e. they were written back to disk.
+	assert.deepEqual(readFileSetsEnsuringIds(configPath), first);
+});
+
+test('closeOthers / openOnStartup / pinned: round-trip when true, are omitted when false or unset', () => {
+	writeFileSets(configPath, [
+		{ name: 'On', closeOthers: true, openOnStartup: true, pinned: true, paths: [] },
+		{ name: 'Off', closeOthers: false, paths: [] }
+	]);
+	assert.deepEqual(readFileSets(configPath), [
+		{ name: 'On', closeOthers: true, openOnStartup: true, pinned: true, paths: [] },
+		{ name: 'Off', paths: [] }
+	]);
+
+	const onDisk = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+	assert.deepEqual(Object.keys(onDisk[1]), ['name', 'paths']);
+});
+
+test('readFileSets: rejects a non-boolean closeOthers or openOnStartup', () => {
+	fs.mkdirSync(path.dirname(configPath), { recursive: true });
+	fs.writeFileSync(configPath, JSON.stringify([{ name: 'Set', openOnStartup: 'yes', paths: [] }]));
+	assert.throws(() => readFileSets(configPath), /"openOnStartup" must be true or false/);
+});
+
+test('path "newest" and set "group": round-trip, and invalid values are rejected', () => {
+	writeFileSets(configPath, [{ name: 'S', group: 'G', paths: [{ path: 'logs/*.log', newest: 2 }] }]);
+	assert.deepEqual(readFileSets(configPath), [{ name: 'S', group: 'G', paths: [{ path: 'logs/*.log', newest: 2 }] }]);
+
+	fs.writeFileSync(configPath, JSON.stringify([{ name: 'S', paths: [{ path: 'a', newest: 0 }] }]));
+	assert.throws(() => readFileSets(configPath), /"newest" must be a positive integer/);
+	fs.writeFileSync(configPath, JSON.stringify([{ name: 'S', group: 5, paths: [] }]));
+	assert.throws(() => readFileSets(configPath), /"group" must be a string/);
+	fs.writeFileSync(configPath, JSON.stringify([{ name: 'S', group: '  ', paths: [] }]));
+	assert.deepEqual(readFileSets(configPath), [{ name: 'S', paths: [] }]);
 });

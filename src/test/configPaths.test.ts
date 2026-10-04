@@ -10,22 +10,22 @@ import { getConfigDirectory, getDefaultConfigPath, resolveConfiguredPath } from 
 
 test('getConfigDirectory: Linux uses XDG_CONFIG_HOME when set', () => {
 	const dir = getConfigDirectory('linux', { XDG_CONFIG_HOME: '/custom/config' });
-	assert.equal(dir, path.join('/custom/config', 'file-grid-open'));
+	assert.equal(dir, path.join('/custom/config', 'FileGridOpen'));
 });
 
 test('getConfigDirectory: Linux falls back to ~/.config', () => {
 	const dir = getConfigDirectory('linux', {});
-	assert.equal(dir, path.join(os.homedir(), '.config', 'file-grid-open'));
+	assert.equal(dir, path.join(os.homedir(), '.config', 'FileGridOpen'));
 });
 
 test('getConfigDirectory: macOS uses Application Support', () => {
 	const dir = getConfigDirectory('darwin', {});
-	assert.equal(dir, path.join(os.homedir(), 'Library', 'Application Support', 'file-grid-open'));
+	assert.equal(dir, path.join(os.homedir(), 'Library', 'Application Support', 'FileGridOpen'));
 });
 
 test('getConfigDirectory: Windows uses APPDATA when set', () => {
 	const dir = getConfigDirectory('win32', { APPDATA: 'C:\\Users\\me\\AppData\\Roaming' });
-	assert.equal(dir, path.join('C:\\Users\\me\\AppData\\Roaming', 'file-grid-open'));
+	assert.equal(dir, path.join('C:\\Users\\me\\AppData\\Roaming', 'FileGridOpen'));
 });
 
 test('getDefaultConfigPath: different folder paths never collide', () => {

@@ -1,7 +1,18 @@
 import * as vscode from 'vscode';
 import { getDefaultConfigPath, resolveConfiguredPath } from './core/configPaths';
 
-export { FileSet, FileSetPathEntry, ensureConfigFile, readFileSets, writeFileSets } from './core/configFile';
+export {
+	FileSet,
+	FileSetPathEntry,
+	ensureConfigFile,
+	newFileSetId,
+	parseFileSets,
+	readFileSets,
+	readFileSetsEnsuringIds,
+	serializeFileSet,
+	withIds,
+	writeFileSets
+} from './core/configFile';
 
 /**
  * Resolves the on-disk location of a workspace folder's config file: the "fileGridOpen.configPath"

@@ -1,24 +1,29 @@
 {
-  "name": "file-grid-open",
-  "displayName": "FileGridOpen",
+  "name": "FileGridOpen",
+  "displayName": "File Grid Open",
   "description": "Open a configured set of files side by side, with layout you control",
   "version": "0.0.1",
-  "publisher": "your-publisher-id",
+  "publisher": "KirkTolleshaug",
   "license": "MIT",
   "icon": "resources/marketplace-icon.png",
   "repository": {
     "type": "git",
-    "url": "https://github.com/your-github-username/file-grid-open.git"
+    "url": "https://github.com/ktoll2/FileGridOpen.git"
   },
   "bugs": {
-    "url": "https://github.com/your-github-username/file-grid-open/issues"
+    "url": "https://github.com/ktoll2/FileGridOpen/issues"
   },
-  "homepage": "https://github.com/your-github-username/file-grid-open#readme",
+  "homepage": "https://github.com/ktoll2/FileGridOpen#readme",
   "keywords": [
-    "file grid open",
-    "side by side",
-    "layout",
+    "file sets",
+    "workspace",
+    "split editor",
+    "editor layout",
     "editor groups",
+    "side by side",
+    "open multiple files",
+    "glob",
+    "grid",
     "productivity"
   ],
   "engines": {
@@ -28,6 +33,7 @@
     "Other"
   ],
   "activationEvents": [
+    "onStartupFinished",
     "onView:fileGridOpenSets"
   ],
   "main": "./out/extension.js",
@@ -35,32 +41,100 @@
     "commands": [
       {
         "command": "fileGridOpen.openSet",
-        "title": "FileGridOpen: Open File Set"
+        "title": "File Grid Open: Open File Set"
       },
       {
         "command": "fileGridOpen.editConfig",
-        "title": "FileGridOpen: Edit Configuration",
+        "title": "File Grid Open: Edit Configuration",
         "icon": "$(edit)"
       },
       {
         "command": "fileGridOpen.editConfigJson",
-        "title": "FileGridOpen: Edit Configuration (JSON)"
+        "title": "File Grid Open: Edit Configuration (JSON)"
       },
       {
         "command": "fileGridOpen.refresh",
-        "title": "FileGridOpen: Refresh",
+        "title": "File Grid Open: Refresh",
         "icon": "$(refresh)"
       },
       {
         "command": "fileGridOpen.addToSet",
-        "title": "Add to FileGridOpen Set..."
+        "title": "Add to File Grid Open Set..."
+      },
+      {
+        "command": "fileGridOpen.openSetItem",
+        "title": "Open File Set"
+      },
+      {
+        "command": "fileGridOpen.editSet",
+        "title": "Edit File Set"
+      },
+      {
+        "command": "fileGridOpen.renameSet",
+        "title": "Rename File Set..."
+      },
+      {
+        "command": "fileGridOpen.deleteSet",
+        "title": "Delete File Set"
+      },
+      {
+        "command": "fileGridOpen.openLastSet",
+        "title": "File Grid Open: Open Last File Set"
+      },
+      {
+        "command": "fileGridOpen.saveLayoutAsSet",
+        "title": "File Grid Open: Save Current Layout as File Set..."
+      },
+      {
+        "command": "fileGridOpen.importSet",
+        "title": "File Grid Open: Import File Set from Clipboard"
+      },
+      {
+        "command": "fileGridOpen.duplicateSet",
+        "title": "Duplicate File Set"
+      },
+      {
+        "command": "fileGridOpen.copySetAsJson",
+        "title": "Copy File Set as JSON"
+      },
+      {
+        "command": "fileGridOpen.removeFileFromSet",
+        "title": "Remove from File Set"
+      },
+      {
+        "command": "fileGridOpen.pinSet",
+        "title": "Pin to Status Bar"
+      },
+      {
+        "command": "fileGridOpen.unpinSet",
+        "title": "Unpin from Status Bar"
+      },
+      {
+        "command": "fileGridOpen.updateSetFromLayout",
+        "title": "Update from Current Layout"
+      },
+      {
+        "command": "fileGridOpen.openFileAt",
+        "title": "Open in Editor Group..."
+      },
+      {
+        "command": "fileGridOpen.moveToGroup",
+        "title": "Move to Group..."
+      },
+      {
+        "command": "fileGridOpen.renameGroup",
+        "title": "Rename Group..."
+      },
+      {
+        "command": "fileGridOpen.ungroup",
+        "title": "Ungroup (Keep Sets)"
       }
     ],
     "viewsContainers": {
       "activitybar": [
         {
           "id": "fileGridOpen",
-          "title": "FileGridOpen",
+          "title": "File Grid Open",
           "icon": "resources/icon.svg"
         }
       ]
@@ -80,6 +154,64 @@
       }
     ],
     "menus": {
+      "commandPalette": [
+        {
+          "command": "fileGridOpen.openSetItem",
+          "when": "false"
+        },
+        {
+          "command": "fileGridOpen.editSet",
+          "when": "false"
+        },
+        {
+          "command": "fileGridOpen.renameSet",
+          "when": "false"
+        },
+        {
+          "command": "fileGridOpen.deleteSet",
+          "when": "false"
+        },
+        {
+          "command": "fileGridOpen.duplicateSet",
+          "when": "false"
+        },
+        {
+          "command": "fileGridOpen.copySetAsJson",
+          "when": "false"
+        },
+        {
+          "command": "fileGridOpen.removeFileFromSet",
+          "when": "false"
+        },
+        {
+          "command": "fileGridOpen.pinSet",
+          "when": "false"
+        },
+        {
+          "command": "fileGridOpen.unpinSet",
+          "when": "false"
+        },
+        {
+          "command": "fileGridOpen.updateSetFromLayout",
+          "when": "false"
+        },
+        {
+          "command": "fileGridOpen.openFileAt",
+          "when": "false"
+        },
+        {
+          "command": "fileGridOpen.moveToGroup",
+          "when": "false"
+        },
+        {
+          "command": "fileGridOpen.renameGroup",
+          "when": "false"
+        },
+        {
+          "command": "fileGridOpen.ungroup",
+          "when": "false"
+        }
+      ],
       "view/title": [
         {
           "command": "fileGridOpen.editConfig",
@@ -90,6 +222,88 @@
           "command": "fileGridOpen.refresh",
           "when": "view == fileGridOpenSets",
           "group": "navigation@2"
+        },
+        {
+          "command": "fileGridOpen.saveLayoutAsSet",
+          "when": "view == fileGridOpenSets",
+          "group": "1_sets@1"
+        },
+        {
+          "command": "fileGridOpen.importSet",
+          "when": "view == fileGridOpenSets",
+          "group": "1_sets@2"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "fileGridOpen.openSetItem",
+          "when": "view == fileGridOpenSets && viewItem =~ /^fileGridOpenSet/",
+          "group": "1_open@1"
+        },
+        {
+          "command": "fileGridOpen.editSet",
+          "when": "view == fileGridOpenSets && viewItem =~ /^fileGridOpenSet/",
+          "group": "2_modify@0"
+        },
+        {
+          "command": "fileGridOpen.renameSet",
+          "when": "view == fileGridOpenSets && viewItem =~ /^fileGridOpenSet/",
+          "group": "2_modify@1"
+        },
+        {
+          "command": "fileGridOpen.deleteSet",
+          "when": "view == fileGridOpenSets && viewItem =~ /^fileGridOpenSet/",
+          "group": "2_modify@2"
+        },
+        {
+          "command": "fileGridOpen.duplicateSet",
+          "when": "view == fileGridOpenSets && viewItem =~ /^fileGridOpenSet/",
+          "group": "2_modify@3"
+        },
+        {
+          "command": "fileGridOpen.copySetAsJson",
+          "when": "view == fileGridOpenSets && viewItem =~ /^fileGridOpenSet/",
+          "group": "3_share@1"
+        },
+        {
+          "command": "fileGridOpen.removeFileFromSet",
+          "when": "view == fileGridOpenSets && viewItem =~ /^fileGridOpenFile/",
+          "group": "1_modify@1"
+        },
+        {
+          "command": "fileGridOpen.pinSet",
+          "when": "view == fileGridOpenSets && viewItem == fileGridOpenSet",
+          "group": "3_share@2"
+        },
+        {
+          "command": "fileGridOpen.unpinSet",
+          "when": "view == fileGridOpenSets && viewItem == fileGridOpenSetPinned",
+          "group": "3_share@2"
+        },
+        {
+          "command": "fileGridOpen.updateSetFromLayout",
+          "when": "view == fileGridOpenSets && viewItem =~ /^fileGridOpenSet/",
+          "group": "2_modify@4"
+        },
+        {
+          "command": "fileGridOpen.openFileAt",
+          "when": "view == fileGridOpenSets && viewItem == fileGridOpenFile",
+          "group": "0_open@1"
+        },
+        {
+          "command": "fileGridOpen.moveToGroup",
+          "when": "view == fileGridOpenSets && viewItem =~ /^fileGridOpenSet/",
+          "group": "2_modify@5"
+        },
+        {
+          "command": "fileGridOpen.renameGroup",
+          "when": "view == fileGridOpenSets && viewItem == fileGridOpenGroup",
+          "group": "1_modify@1"
+        },
+        {
+          "command": "fileGridOpen.ungroup",
+          "when": "view == fileGridOpenSets && viewItem == fileGridOpenGroup",
+          "group": "1_modify@2"
         }
       ],
       "explorer/context": [
@@ -101,7 +315,7 @@
       ]
     },
     "configuration": {
-      "title": "FileGridOpen",
+      "title": "File Grid Open",
       "properties": {
         "fileGridOpen.configPath": {
           "type": "string",
@@ -122,9 +336,8 @@
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
-    "@types/vscode": "^1.85.0",
-    "@vscode/vsce": "^2.32.0",
-    "ovsx": "^1.2.0",
+    "@types/vscode": "~1.85.0",
+    "@vscode/vsce": "^4.0.0",
     "typescript": "^5.5.0"
   }
 }

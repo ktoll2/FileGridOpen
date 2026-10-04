@@ -2,14 +2,12 @@ name: Release
 
 # Manual only: this never runs on push or pull_request. Builds the extension through the
 # Makefile, at exactly whatever version the repo-root VERSION file holds (bumped by hand before
-# triggering a release). vscode's Makefile's `package` target passes it straight through to
+# triggering a release); the Makefile's `package` target passes it straight through to
 # `vsce package <version>` (which updates package.json and package-lock.json itself via
 # `npm version`). The release tag and the "version must increase" check work off that same value;
 # a prerelease's tag gets a run-number suffix for uniqueness, but the packaged version itself is
 # never modified. Choose "release" or "prerelease" to also publish the .vsix to a GitHub release.
-# Choosing "release" additionally publishes to the VS Code Marketplace and Open VSX, but only for
-# whichever of the two has its PAT secret (VSCE_PAT / OVSX_PAT) set on the repo - missing either
-# one just skips that marketplace instead of failing the run.
+# Publishing to the VS Code Marketplace and Open VSX is done by hand with the released .vsix.
 on:
   workflow_dispatch:
     inputs:
@@ -79,7 +77,7 @@ jobs:
       - name: Upload VSIX artifact
         uses: actions/upload-artifact@v6
         with:
-          name: file-grid-open-VSIX
+          name: FileGridOpen-VSIX
           path: "*.vsix"
           if-no-files-found: error
 
@@ -94,7 +92,7 @@ jobs:
       - name: Download VSIX artifact
         uses: actions/download-artifact@v7
         with:
-          name: file-grid-open-VSIX
+          name: FileGridOpen-VSIX
           path: dist
 
       - name: Compute checksum
@@ -117,30 +115,3 @@ jobs:
             `${{ steps.hash.outputs.vsix }}` SHA-256: `${{ steps.hash.outputs.sha }}`
           fail_on_unmatched_files: true
           files: dist/*.vsix
-
-  # Only runs for a full "release" (not "prerelease" or "none"), and only once the build job has
-  # succeeded. Each marketplace publish step skips itself if its PAT secret isn't set, rather than
-  # failing the run - so this is safe to leave enabled before either secret has been added.
-  marketplace-publish:
-    needs: vscode
-    if: inputs.release == 'release'
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Download VSIX artifact
-        uses: actions/download-artifact@v7
-        with:
-          name: file-grid-open-VSIX
-          path: dist
-
-      - name: Publish to VS Code Marketplace
-        if: env.VSCE_PAT != ''
-        env:
-          VSCE_PAT: ${{ secrets.VSCE_PAT }}
-        run: npx --yes @vscode/vsce publish --packagePath dist/*.vsix
-
-      - name: Publish to Open VSX
-        if: env.OVSX_PAT != ''
-        env:
-          OVSX_PAT: ${{ secrets.OVSX_PAT }}
-        run: npx --yes ovsx publish dist/*.vsix -p "$OVSX_PAT"

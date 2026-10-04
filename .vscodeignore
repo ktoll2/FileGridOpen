@@ -5,4 +5,5 @@ out/test/**
 .gitignore
 tsconfig.json
 **/*.map
-.multi-file.json
+Makefile
+VERSION

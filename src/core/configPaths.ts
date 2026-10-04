@@ -2,17 +2,17 @@ import * as crypto from 'crypto';
 import * as os from 'os';
 import * as path from 'path';
 
-/** The user-level directory file-grid-open stores its config under, independent of any project. */
+/** The user-level directory File Grid Open stores its config under, independent of any project. */
 export function getConfigDirectory(platform: NodeJS.Platform = process.platform, env: NodeJS.ProcessEnv = process.env): string {
 	if (platform === 'win32') {
-		return path.join(env.APPDATA ?? path.join(os.homedir(), 'AppData', 'Roaming'), 'file-grid-open');
+		return path.join(env.APPDATA ?? path.join(os.homedir(), 'AppData', 'Roaming'), 'FileGridOpen');
 	}
 
 	if (platform === 'darwin') {
-		return path.join(os.homedir(), 'Library', 'Application Support', 'file-grid-open');
+		return path.join(os.homedir(), 'Library', 'Application Support', 'FileGridOpen');
 	}
 
-	return path.join(env.XDG_CONFIG_HOME ?? path.join(os.homedir(), '.config'), 'file-grid-open');
+	return path.join(env.XDG_CONFIG_HOME ?? path.join(os.homedir(), '.config'), 'FileGridOpen');
 }
 
 /**
