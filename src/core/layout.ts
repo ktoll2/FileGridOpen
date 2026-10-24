@@ -19,7 +19,7 @@ export interface ResolvedEntry {
 	row: number;
 }
 
-/**
+/*
  * Resolves each entry's effective column/row (both 0-based): explicit values are used as-is, an
  * omitted column auto-increments past the highest column used so far (starting at 0), and an
  * omitted row defaults to 0.
@@ -40,7 +40,7 @@ export interface PositionCollision {
 	paths: string[];
 }
 
-/** Finds groups of path entries that resolve to the same (column, row) slot - an ambiguous placement. */
+/* Finds groups of path entries that resolve to the same (column, row) slot - an ambiguous placement. */
 export function findCollisions(entries: FileSetPathEntry[]): PositionCollision[] {
 	const groups = new Map<string, ResolvedEntry[]>();
 	for (const resolved of resolvePositions(entries)) {
@@ -68,7 +68,7 @@ export function findCollisions(entries: FileSetPathEntry[]): PositionCollision[]
 	return collisions;
 }
 
-/**
+/*
  * Assigns a 1-based ViewColumn to each path entry from its optional (0-based) column/row hints.
  * Column and row are sort keys, not literal slot numbers, so gaps (e.g. columns 0 and 2 but no 1)
  * are fine.

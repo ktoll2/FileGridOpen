@@ -12,7 +12,7 @@ export {
 	resolvePositions
 } from './core/layout';
 
-/** Rebuilds the editor grid to match a plan produced by `planLayout`. Discards other open groups. */
+/* Rebuilds the editor grid to match a plan produced by `planLayout`. Discards other open groups. */
 export async function applyGridLayout(groups: unknown[]): Promise<void> {
 	await vscode.commands.executeCommand('vscode.setEditorLayout', {
 		orientation: ORIENTATION_HORIZONTAL,

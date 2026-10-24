@@ -1,11 +1,12 @@
 import * as fs from 'fs';
+import * as os from 'os';
 import * as vscode from 'vscode';
-import { FileSet, FileSetPathEntry, getConfigPath, getPrimaryWorkspaceFolder, readFileSetsEnsuringIds } from './config';
+import { FileSet, FileSetPathEntry, getConfigPath, readFileSetsEnsuringIds } from './config';
 import { isGlobPattern, resolveFilePath } from './core/setLogic';
 import { GlobResult, findGlobMatches } from './globMatches';
 
-function isMissing(folder: vscode.WorkspaceFolder, filePath: string): boolean {
-	return filePath !== '' && !isGlobPattern(filePath) && !fs.existsSync(resolveFilePath(folder.uri.fsPath, filePath));
+function isMissing(filePath: string): boolean {
+	return filePath !== '' && !isGlobPattern(filePath) && !fs.existsSync(resolveFilePath(os.homedir(), filePath));
 }
 
 function describePosition(entry: FileSetPathEntry): string {
@@ -17,7 +18,7 @@ function describePosition(entry: FileSetPathEntry): string {
 		.join(', ');
 }
 
-/** A sidebar folder holding the sets that share a `group`. */
+/* A sidebar folder holding the sets that share a `group`. */
 export class GroupItem extends vscode.TreeItem {
 	constructor(
 		public readonly groupName: string,
@@ -59,16 +60,15 @@ export class FileSetItem extends vscode.TreeItem {
 	}
 }
 
-/** A file listed under its set; a glob entry also lists the files it currently matches. */
+/* A file listed under its set; a glob entry also lists the files it currently matches. */
 export class FilePathItem extends vscode.TreeItem {
-	/** Workspace-relative files a glob entry currently matches (empty for plain entries). */
+	/* Absolute files a glob entry currently matches (empty for plain entries). */
 	readonly matches: string[];
 
 	constructor(
 		public readonly setId: string | undefined,
 		public readonly pathIndex: number,
 		public readonly entry: FileSetPathEntry,
-		folder: vscode.WorkspaceFolder,
 		glob?: GlobResult
 	) {
 		super(
@@ -79,7 +79,7 @@ export class FilePathItem extends vscode.TreeItem {
 		this.matches = glob?.matches ?? [];
 
 		const isPattern: boolean = isGlobPattern(entry.path);
-		const missing: boolean = isMissing(folder, entry.path);
+		const missing: boolean = isMissing(entry.path);
 		const noMatches: boolean = isPattern && this.matches.length === 0;
 		const note: string | undefined = missing
 			? 'missing'
@@ -90,7 +90,8 @@ export class FilePathItem extends vscode.TreeItem {
 						? `${glob.matches.length} of ${glob.total} matches`
 						: `${glob.matches.length} match${glob.matches.length === 1 ? '' : 'es'}`
 					: undefined;
-		this.description = [describePosition(entry), note].filter((part): part is string => !!part).join(' - ');
+		const cutShort: boolean = glob?.truncated === true;
+		this.description = [describePosition(entry), note, cutShort ? 'search cut short' : undefined].filter((part): part is string => !!part).join(' - ');
 		this.tooltip = missing
 			? `${entry.path} - file not found`
 			: glob && glob.pattern !== entry.path
@@ -102,15 +103,15 @@ export class FilePathItem extends vscode.TreeItem {
 			this.command = {
 				command: 'vscode.open',
 				title: 'Open File',
-				arguments: [vscode.Uri.file(resolveFilePath(folder.uri.fsPath, entry.path))]
+				arguments: [vscode.Uri.file(resolveFilePath(os.homedir(), entry.path))]
 			};
 		}
 	}
 }
 
-/** A file matched by a glob entry. */
+/* A file matched by a glob entry. */
 export class FileMatchItem extends vscode.TreeItem {
-	constructor(filePath: string, parent: FilePathItem, folder: vscode.WorkspaceFolder) {
+	constructor(filePath: string, parent: FilePathItem) {
 		super(filePath, vscode.TreeItemCollapsibleState.None);
 		this.id = `${parent.id}>${filePath}`;
 		this.iconPath = new vscode.ThemeIcon('file');
@@ -118,7 +119,7 @@ export class FileMatchItem extends vscode.TreeItem {
 		this.command = {
 			command: 'vscode.open',
 			title: 'Open File',
-			arguments: [vscode.Uri.file(resolveFilePath(folder.uri.fsPath, filePath))]
+			arguments: [vscode.Uri.file(resolveFilePath(os.homedir(), filePath))]
 		};
 	}
 }
@@ -137,48 +138,41 @@ export class FileSetsProvider implements vscode.TreeDataProvider<FileSetTreeNode
 		return element;
 	}
 
-	async getChildren(element?: FileSetTreeNode): Promise<FileSetTreeNode[]> {
-		const folder: vscode.WorkspaceFolder | undefined = getPrimaryWorkspaceFolder();
-		if (!folder) {
-			return [];
-		}
-
+	getChildren(element?: FileSetTreeNode): FileSetTreeNode[] {
 		if (element instanceof FileMatchItem) {
 			return [];
 		}
 
 		if (element instanceof FilePathItem) {
-			return element.matches.map((match) => new FileMatchItem(match, element, folder));
+			return element.matches.map((match) => new FileMatchItem(match, element));
 		}
 
 		if (element instanceof FileSetItem) {
-			return Promise.all(
-				element.fileSet.paths.map(async (entry, index) => {
-					const glob: GlobResult | undefined = isGlobPattern(entry.path) ? await findGlobMatches(folder, entry) : undefined;
-					return new FilePathItem(element.fileSet.id, index, entry, folder, glob);
-				})
-			);
+			return element.fileSet.paths.map((entry, index) => {
+				const glob: GlobResult | undefined = isGlobPattern(entry.path) ? findGlobMatches(entry) : undefined;
+				return new FilePathItem(element.fileSet.id, index, entry, glob);
+			});
 		}
 
 		if (element instanceof GroupItem) {
-			return element.sets.map((fileSet) => this.createSetItem(folder, fileSet));
+			return element.sets.map((fileSet) => this.createSetItem(fileSet));
 		}
 
 		try {
-			return this.rootNodes(folder, readFileSetsEnsuringIds(getConfigPath(folder)));
+			return this.rootNodes(readFileSetsEnsuringIds(getConfigPath()));
 		} catch (error) {
 			vscode.window.showErrorMessage(`File Grid Open: ${(error as Error).message}`);
 			return [];
 		}
 	}
 
-	/** Top level: ungrouped sets in file order, with each group appearing where its first set is. */
-	private rootNodes(folder: vscode.WorkspaceFolder, fileSets: FileSet[]): FileSetTreeNode[] {
+	/* Top level: ungrouped sets in file order, with each group appearing where its first set is. */
+	private rootNodes(fileSets: FileSet[]): FileSetTreeNode[] {
 		const nodes: FileSetTreeNode[] = [];
 		const seenGroups: Set<string> = new Set();
 		for (const fileSet of fileSets) {
 			if (!fileSet.group) {
-				nodes.push(this.createSetItem(folder, fileSet));
+				nodes.push(this.createSetItem(fileSet));
 			} else if (!seenGroups.has(fileSet.group)) {
 				seenGroups.add(fileSet.group);
 				nodes.push(
@@ -192,10 +186,10 @@ export class FileSetsProvider implements vscode.TreeDataProvider<FileSetTreeNode
 		return nodes;
 	}
 
-	private createSetItem(folder: vscode.WorkspaceFolder, fileSet: FileSet): FileSetItem {
+	private createSetItem(fileSet: FileSet): FileSetItem {
 		return new FileSetItem(
 			fileSet,
-			fileSet.paths.filter((entry) => isMissing(folder, entry.path)).length
+			fileSet.paths.filter((entry) => isMissing(entry.path)).length
 		);
 	}
 }

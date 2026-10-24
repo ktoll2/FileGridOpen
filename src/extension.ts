@@ -1,3 +1,5 @@
+import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import {
@@ -5,7 +7,6 @@ import {
 	FileSetPathEntry,
 	ensureConfigFile,
 	getConfigPath,
-	getPrimaryWorkspaceFolder,
 	newFileSetId,
 	readFileSetsEnsuringIds,
 	writeFileSets
@@ -15,6 +16,7 @@ import {
 	EditorLayout,
 	assignGroup,
 	duplicateFileSet,
+	excludeExistingPaths,
 	exportFileSet,
 	expandGlobEntry,
 	groupNames,
@@ -25,10 +27,9 @@ import {
 	positionsToEntries,
 	renameGroup,
 	resolveFilePath,
-	toRelativePath,
 	uniqueName
 } from './core/setLogic';
-import { findGlobMatches } from './globMatches';
+import { GlobResult, findGlobMatches } from './globMatches';
 import { FileSetsDragAndDrop } from './fileSetsDnd';
 import { FilePathItem, FileSetItem, FileSetsProvider, GroupItem } from './fileSetsProvider';
 import { MAX_VIEW_COLUMNS, applyGridLayout, planLayout } from './layout';
@@ -37,7 +38,7 @@ const LAST_SET_KEY = 'lastSetId';
 
 let extensionContext: vscode.ExtensionContext;
 let lastSetStatusItem: vscode.StatusBarItem;
-/** One status bar item per pinned set, keyed by set id. */
+/* One status bar item per pinned set, keyed by set id. */
 const pinnedStatusItems: Map<string, vscode.StatusBarItem> = new Map();
 
 export function activate(context: vscode.ExtensionContext): void {
@@ -56,7 +57,7 @@ export function activate(context: vscode.ExtensionContext): void {
 	lastSetStatusItem.command = 'fileGridOpen.openLastSet';
 	context.subscriptions.push(lastSetStatusItem);
 
-	/** Refreshes everything that displays the config: the File Sets view, the editor panel and the status bar. */
+	/* Refreshes everything that displays the config: the File Sets view, the editor panel and the status bar. */
 	function refreshViews(): void {
 		provider.refresh();
 		reloadConfigEditor();
@@ -68,14 +69,15 @@ export function activate(context: vscode.ExtensionContext): void {
 		configWatcher?.dispose();
 		configWatcher = undefined;
 
-		const folder = getPrimaryWorkspaceFolder();
-		if (!folder) {
-			return;
+		const configPath: string = getConfigPath();
+		try {
+			// Watching a directory that does not exist yet is unreliable, so create it up front.
+			fs.mkdirSync(path.dirname(configPath), { recursive: true });
+		} catch {
+			// The watcher is best effort; reading and writing report their own errors.
 		}
-
-		const configPath: string = getConfigPath(folder);
 		configWatcher = vscode.workspace.createFileSystemWatcher(
-			// A RelativePattern is needed to watch a config file that lives outside the workspace.
+			// A RelativePattern is needed to watch a config file outside any workspace folder.
 			new vscode.RelativePattern(vscode.Uri.file(path.dirname(configPath)), path.basename(configPath))
 		);
 		configWatcher.onDidChange(() => refreshViews());
@@ -92,10 +94,6 @@ export function activate(context: vscode.ExtensionContext): void {
 				rebuildConfigWatcher();
 				refreshViews();
 			}
-		}),
-		vscode.workspace.onDidChangeWorkspaceFolders(() => {
-			rebuildConfigWatcher();
-			refreshViews();
 		}),
 		vscode.commands.registerCommand('fileGridOpen.openSet', () => openSet(undefined)),
 		vscode.commands.registerCommand('fileGridOpen.openSetById', (id: string) => openSet(id)),
@@ -158,14 +156,31 @@ export function activate(context: vscode.ExtensionContext): void {
 			await deleteSet(item.fileSet.id);
 			refreshViews();
 		}),
-		vscode.commands.registerCommand('fileGridOpen.addToSet', async (uri: vscode.Uri, uris?: vscode.Uri[]) => {
-			await addFilesToSet(uri, uris);
+		vscode.commands.registerCommand('fileGridOpen.addToSet', async (uri?: vscode.Uri, uris?: vscode.Uri[]) => {
+			// Run from a keybinding there is no argument, so fall back to the active file.
+			const target: vscode.Uri | undefined = uri ?? getActiveFileUri();
+			if (!target) {
+				vscode.window.showInformationMessage('File Grid Open: no file to add.');
+				return;
+			}
+			await addFilesToSet(target, uris);
+			refreshViews();
+		}),
+		vscode.commands.registerCommand('fileGridOpen.addActiveFileToSet', async () => {
+			const activeUri: vscode.Uri | undefined = getActiveFileUri();
+			if (!activeUri) {
+				vscode.window.showInformationMessage('File Grid Open: no file to add.');
+				return;
+			}
+			await addFilesToSet(activeUri, undefined);
 			refreshViews();
 		})
 	);
 
 	updateStatusItems();
-	void openStartupSet();
+	openStartupSet().catch((error: unknown) => {
+		vscode.window.showErrorMessage(`File Grid Open: could not open the startup set: ${(error as Error).message}`);
+	});
 }
 
 export function deactivate(): void {
@@ -173,23 +188,11 @@ export function deactivate(): void {
 }
 
 async function editConfig(focusSetId?: string): Promise<void> {
-	const folder = getPrimaryWorkspaceFolder();
-	if (!folder) {
-		vscode.window.showWarningMessage('File Grid Open: open a folder or workspace first.');
-		return;
-	}
-
-	openConfigEditor(folder, getConfigPath(folder), editConfigJson, focusSetId);
+	openConfigEditor(getConfigPath, editConfigJson, focusSetId);
 }
 
 async function editConfigJson(): Promise<void> {
-	const folder = getPrimaryWorkspaceFolder();
-	if (!folder) {
-		vscode.window.showWarningMessage('File Grid Open: open a folder or workspace first.');
-		return;
-	}
-
-	const configPath = getConfigPath(folder);
+	const configPath: string = getConfigPath();
 	try {
 		ensureConfigFile(configPath);
 	} catch (error) {
@@ -197,24 +200,51 @@ async function editConfigJson(): Promise<void> {
 		return;
 	}
 
-	const document = await vscode.workspace.openTextDocument(vscode.Uri.file(configPath));
-	await vscode.window.showTextDocument(document, { preview: false });
+	try {
+		const document: vscode.TextDocument = await vscode.workspace.openTextDocument(vscode.Uri.file(configPath));
+		await vscode.window.showTextDocument(document, { preview: false });
+	} catch (error) {
+		vscode.window.showErrorMessage(`File Grid Open: could not open ${configPath}: ${(error as Error).message}`);
+	}
+}
+
+/*
+ * The file in the active tab, which (unlike activeTextEditor) is still known when focus is in a
+ * webview or non-text editor; falls back to activeTextEditor. Only local files qualify.
+ */
+function getActiveFileUri(): vscode.Uri | undefined {
+	const input: unknown = vscode.window.tabGroups.activeTabGroup.activeTab?.input;
+	if (input instanceof vscode.TabInputText && input.uri.scheme === 'file') {
+		return input.uri;
+	}
+	const editorUri: vscode.Uri | undefined = vscode.window.activeTextEditor?.document.uri;
+	return editorUri && editorUri.scheme === 'file' ? editorUri : undefined;
 }
 
 async function loadFileSets(): Promise<FileSet[] | undefined> {
-	const folder = getPrimaryWorkspaceFolder();
-	if (!folder) {
-		vscode.window.showWarningMessage('File Grid Open: open a folder or workspace first.');
-		return undefined;
-	}
-
-	const configPath = getConfigPath(folder);
 	try {
-		return readFileSetsEnsuringIds(configPath);
+		return readFileSetsEnsuringIds(getConfigPath());
 	} catch (error) {
 		vscode.window.showErrorMessage(`File Grid Open: ${(error as Error).message}`);
 		return undefined;
 	}
+}
+
+/*
+ * Re-reads the config after a prompt (the file is shared with other windows and the editor) and finds
+ * the set by id in the fresh list. Warns and returns undefined if the set is gone or the file is unreadable.
+ */
+async function reloadTargetSet(id: string | undefined): Promise<{ fileSets: FileSet[]; target: FileSet } | undefined> {
+	const fileSets: FileSet[] | undefined = await loadFileSets();
+	if (!fileSets) {
+		return undefined;
+	}
+	const target: FileSet | undefined = fileSets.find((set) => set.id === id);
+	if (!target) {
+		vscode.window.showWarningMessage('File Grid Open: that file set no longer exists.');
+		return undefined;
+	}
+	return { fileSets, target };
 }
 
 async function openSet(id: string | undefined): Promise<void> {
@@ -224,13 +254,9 @@ async function openSet(id: string | undefined): Promise<void> {
 	}
 
 	if (fileSets.length === 0) {
-		const folder = getPrimaryWorkspaceFolder();
-		const configPath = folder ? getConfigPath(folder) : undefined;
 		const editConfigChoice = 'Edit Configuration';
 		const choice = await vscode.window.showInformationMessage(
-			configPath
-				? `No file sets are configured. Add entries to ${configPath}.`
-				: 'No file sets are configured.',
+			`File Grid Open: No file sets are configured. Add entries to ${getConfigPath()}.`,
 			editConfigChoice
 		);
 		if (choice === editConfigChoice) {
@@ -265,7 +291,7 @@ async function openFiles(fileSet: FileSet): Promise<void> {
 		return;
 	}
 
-	const entries: FileSetPathEntry[] = await expandGlobs(fileSet.paths);
+	const entries: FileSetPathEntry[] = expandGlobs(fileSet.paths);
 	if (entries.length === 0) {
 		return;
 	}
@@ -297,7 +323,7 @@ async function openFiles(fileSet: FileSet): Promise<void> {
 		}
 
 		try {
-			await vscode.window.showTextDocument(resolveWorkspacePath(placement.entry.path), {
+			await vscode.window.showTextDocument(resolveConfiguredUri(placement.entry.path), {
 				viewColumn: placement.viewColumn as vscode.ViewColumn,
 				preview: false,
 				preserveFocus: false
@@ -311,25 +337,20 @@ async function openFiles(fileSet: FileSet): Promise<void> {
 		vscode.window.showWarningMessage(`Could not open: ${missing.join(', ')}`);
 	}
 
-	await extensionContext.workspaceState.update(LAST_SET_KEY, fileSet.id);
+	await extensionContext.globalState.update(LAST_SET_KEY, fileSet.id);
 	updateStatusItems();
 }
 
-/** Reads the file sets without surfacing errors; for background uses like the status bar. */
+/* Reads the file sets without surfacing errors; for background uses like the status bar. */
 function readFileSetsQuietly(): FileSet[] {
-	const folder: vscode.WorkspaceFolder | undefined = getPrimaryWorkspaceFolder();
-	if (!folder) {
-		return [];
-	}
-
 	try {
-		return readFileSetsEnsuringIds(getConfigPath(folder));
+		return readFileSetsEnsuringIds(getConfigPath());
 	} catch {
 		return [];
 	}
 }
 
-/**
+/*
  * Updates the status bar: one item per pinned set, plus one for the most recently opened set (unless
  * that set is pinned and already has its own item).
  */
@@ -356,7 +377,7 @@ function updateStatusItems(): void {
 		item.show();
 	});
 
-	const lastId: string | undefined = extensionContext.workspaceState.get<string>(LAST_SET_KEY);
+	const lastId: string | undefined = extensionContext.globalState.get<string>(LAST_SET_KEY);
 	const lastSet: FileSet | undefined = sets.find((set) => set.id === lastId);
 	if (!lastSet || lastSet.pinned) {
 		lastSetStatusItem.hide();
@@ -368,9 +389,9 @@ function updateStatusItems(): void {
 	lastSetStatusItem.show();
 }
 
-/** Reopens the last opened set, or prompts for one if there is none (or it no longer exists). */
+/* Reopens the last opened set, or prompts for one if there is none (or it no longer exists). */
 async function openLastSet(): Promise<void> {
-	const lastId: string | undefined = extensionContext.workspaceState.get<string>(LAST_SET_KEY);
+	const lastId: string | undefined = extensionContext.globalState.get<string>(LAST_SET_KEY);
 	const exists: boolean = readFileSetsQuietly().some((set) => set.id === lastId);
 	await openSet(exists ? lastId : undefined);
 }
@@ -385,12 +406,11 @@ async function openStartupSet(): Promise<void> {
 
 const CREATE_NEW_SET = '$(add) Create New Set...';
 
-/** Renames a file set after prompting for a name; a name another set already uses gets a number appended. */
+/* Renames a file set after prompting for a name; a name another set already uses gets a number appended. */
 async function renameSet(id: string | undefined): Promise<void> {
 	const fileSets: FileSet[] | undefined = await loadFileSets();
 	const target: FileSet | undefined = fileSets?.find((set) => set.id === id);
-	const folder: vscode.WorkspaceFolder | undefined = getPrimaryWorkspaceFolder();
-	if (!fileSets || !target || !folder) {
+	if (!fileSets || !target) {
 		return;
 	}
 
@@ -404,24 +424,28 @@ async function renameSet(id: string | undefined): Promise<void> {
 		return;
 	}
 
-	const finalName: string = uniqueName(
-		newName.trim(),
-		fileSets.filter((set) => set !== target).map((set) => set.name)
-	);
-	if (finalName === oldName) {
+	const fresh: { fileSets: FileSet[]; target: FileSet } | undefined = await reloadTargetSet(id);
+	if (!fresh) {
 		return;
 	}
 
-	target.name = finalName;
-	saveFileSets(folder, fileSets);
+	const finalName: string = uniqueName(
+		newName.trim(),
+		fresh.fileSets.filter((set) => set !== fresh.target).map((set) => set.name)
+	);
+	if (finalName === fresh.target.name) {
+		return;
+	}
+
+	fresh.target.name = finalName;
+	saveFileSets(fresh.fileSets);
 }
 
-/** Deletes a file set after a modal confirmation. */
+/* Deletes a file set after a modal confirmation. */
 async function deleteSet(id: string | undefined): Promise<void> {
 	const fileSets: FileSet[] | undefined = await loadFileSets();
-	const folder: vscode.WorkspaceFolder | undefined = getPrimaryWorkspaceFolder();
 	const target: FileSet | undefined = fileSets?.find((set) => set.id === id);
-	if (!fileSets || !folder || !target) {
+	if (!fileSets || !target) {
 		return;
 	}
 
@@ -434,30 +458,34 @@ async function deleteSet(id: string | undefined): Promise<void> {
 		return;
 	}
 
-	saveFileSets(
-		folder,
-		fileSets.filter((set) => set.id !== id)
-	);
+	const fresh: { fileSets: FileSet[]; target: FileSet } | undefined = await reloadTargetSet(id);
+	if (!fresh) {
+		return;
+	}
+
+	saveFileSets(fresh.fileSets.filter((set) => set.id !== id));
 }
 
-function saveFileSets(folder: vscode.WorkspaceFolder, fileSets: FileSet[]): void {
+function saveFileSets(fileSets: FileSet[]): void {
 	try {
-		writeFileSets(getConfigPath(folder), fileSets);
+		writeFileSets(getConfigPath(), fileSets);
 	} catch (error) {
 		vscode.window.showErrorMessage(`File Grid Open: could not save: ${(error as Error).message}`);
 	}
 }
 
-/** Adds one or more Explorer-selected files to an existing or new file set. */
+/* Adds one or more Explorer-selected files to an existing or new file set. */
 async function addFilesToSet(uri: vscode.Uri, selected: vscode.Uri[] | undefined): Promise<void> {
-	const uris = selected && selected.length > 0 ? selected : [uri];
-	const folder = vscode.workspace.getWorkspaceFolder(uri) ?? getPrimaryWorkspaceFolder();
-	if (!folder) {
-		vscode.window.showWarningMessage('File Grid Open: open a folder or workspace first.');
+	const allUris: vscode.Uri[] = Array.isArray(selected) && selected.length > 0 ? selected : [uri];
+	// The menu only hides the command for a clicked folder, so drop folders from a multi-selection here.
+	const uris: vscode.Uri[] = allUris.filter((fileUri) => !isDirectory(fileUri.fsPath));
+	const folderCount: number = allUris.length - uris.length;
+	if (uris.length === 0) {
+		vscode.window.showInformationMessage('File Grid Open: folders cannot be added to a file set.');
 		return;
 	}
 
-	const configPath = getConfigPath(folder);
+	const configPath: string = getConfigPath();
 	let fileSets: FileSet[];
 	try {
 		fileSets = readFileSetsEnsuringIds(configPath);
@@ -477,38 +505,53 @@ async function addFilesToSet(uri: vscode.Uri, selected: vscode.Uri[] | undefined
 		return;
 	}
 
-	let targetSet: FileSet;
+	let newSetName: string | undefined;
 	if (!picked.fileSet) {
-		const name = await vscode.window.showInputBox({
+		newSetName = await vscode.window.showInputBox({
 			prompt: 'New file set name',
 			validateInput: (value) => (value.trim() ? undefined : 'Name cannot be empty.')
 		});
-		if (!name) {
+		if (!newSetName) {
 			return;
 		}
+	}
 
+	// Re-read now that the prompts are answered, so changes made elsewhere meanwhile are kept.
+	try {
+		fileSets = readFileSetsEnsuringIds(configPath);
+	} catch (error) {
+		vscode.window.showErrorMessage(`File Grid Open: ${(error as Error).message}`);
+		return;
+	}
+
+	let targetSet: FileSet | undefined;
+	if (newSetName !== undefined) {
 		targetSet = {
 			id: newFileSetId(),
 			name: uniqueName(
-				name.trim(),
+				newSetName.trim(),
 				fileSets.map((set) => set.name)
 			),
 			paths: []
 		};
 		fileSets = [...fileSets, targetSet];
 	} else {
-		targetSet = picked.fileSet;
+		const pickedId: string | undefined = picked.fileSet?.id;
+		targetSet = fileSets.find((set) => set.id === pickedId);
+		if (!targetSet) {
+			vscode.window.showWarningMessage('File Grid Open: that file set no longer exists.');
+			return;
+		}
 	}
 
-	const existingPaths = new Set(targetSet.paths.map((entry) => entry.path));
-	let addedCount = 0;
-	for (const fileUri of uris) {
-		const relativePath = toWorkspaceRelativePath(folder, fileUri);
-		if (!existingPaths.has(relativePath)) {
-			targetSet.paths.push({ path: relativePath });
-			existingPaths.add(relativePath);
-			addedCount++;
-		}
+	const newPaths: string[] = excludeExistingPaths(
+		targetSet,
+		[...new Set(uris.map((fileUri) => fileUri.fsPath))],
+		os.homedir(),
+		process.platform === 'win32'
+	);
+	for (const filePath of newPaths) {
+		targetSet.paths.push({ path: filePath });
 	}
 
 	try {
@@ -518,41 +561,50 @@ async function addFilesToSet(uri: vscode.Uri, selected: vscode.Uri[] | undefined
 		return;
 	}
 
-	const skippedCount = uris.length - addedCount;
+	const addedCount: number = newPaths.length;
+	const alreadyPresentCount: number = uris.length - addedCount;
+	const notes: string[] = [];
+	if (alreadyPresentCount > 0) {
+		notes.push(`${alreadyPresentCount} already present`);
+	}
+	if (folderCount > 0) {
+		notes.push(`${folderCount} folder${folderCount === 1 ? '' : 's'} skipped`);
+	}
 	vscode.window.showInformationMessage(
 		`File Grid Open: added ${addedCount} file${addedCount === 1 ? '' : 's'} to "${targetSet.name}"` +
-			(skippedCount > 0 ? ` (${skippedCount} already present).` : '.')
+			(notes.length > 0 ? ` (${notes.join(', ')}).` : '.')
 	);
 }
 
-function toWorkspaceRelativePath(folder: vscode.WorkspaceFolder, uri: vscode.Uri): string {
-	return toRelativePath(folder.uri.fsPath, uri.fsPath);
+function isDirectory(fsPath: string): boolean {
+	try {
+		return fs.statSync(fsPath).isDirectory();
+	} catch {
+		return false;
+	}
 }
 
-function resolveWorkspacePath(filePath: string): vscode.Uri {
-	const folder = getPrimaryWorkspaceFolder();
-	return vscode.Uri.file(resolveFilePath(folder ? folder.uri.fsPath : '', filePath));
+function resolveConfiguredUri(filePath: string): vscode.Uri {
+	return vscode.Uri.file(resolveFilePath(os.homedir(), filePath));
 }
 
-/** Adds a copy of a set (new id, numbered name) right after the original. */
+/* Adds a copy of a set (new id, numbered name) right after the original. */
 async function duplicateSet(id: string | undefined): Promise<void> {
 	const fileSets: FileSet[] | undefined = await loadFileSets();
-	const folder: vscode.WorkspaceFolder | undefined = getPrimaryWorkspaceFolder();
 	const index: number = fileSets?.findIndex((set) => set.id === id) ?? -1;
-	if (!fileSets || !folder || index === -1) {
+	if (!fileSets || index === -1) {
 		return;
 	}
 
 	fileSets.splice(index + 1, 0, duplicateFileSet(fileSets[index], fileSets));
-	saveFileSets(folder, fileSets);
+	saveFileSets(fileSets);
 }
 
-/** Removes one file entry from its set, from the sidebar. */
+/* Removes one file entry from its set, from the sidebar. */
 async function removeFileFromSet(item: FilePathItem): Promise<void> {
 	const fileSets: FileSet[] | undefined = await loadFileSets();
-	const folder: vscode.WorkspaceFolder | undefined = getPrimaryWorkspaceFolder();
 	const target: FileSet | undefined = fileSets?.find((set) => set.id === item.setId);
-	if (!fileSets || !folder || !target) {
+	if (!fileSets || !target) {
 		return;
 	}
 
@@ -566,14 +618,13 @@ async function removeFileFromSet(item: FilePathItem): Promise<void> {
 	}
 
 	target.paths.splice(index, 1);
-	saveFileSets(folder, fileSets);
+	saveFileSets(fileSets);
 }
 
-/** Imports one or more sets from JSON on the clipboard (as produced by "Copy File Set as JSON"). */
+/* Imports one or more sets from JSON on the clipboard (as produced by "Copy File Set as JSON"). */
 async function importSet(): Promise<void> {
 	const fileSets: FileSet[] | undefined = await loadFileSets();
-	const folder: vscode.WorkspaceFolder | undefined = getPrimaryWorkspaceFolder();
-	if (!fileSets || !folder) {
+	if (!fileSets) {
 		return;
 	}
 
@@ -585,18 +636,18 @@ async function importSet(): Promise<void> {
 		return;
 	}
 
-	saveFileSets(folder, [...fileSets, ...imported]);
+	saveFileSets([...fileSets, ...imported]);
 	vscode.window.showInformationMessage(
 		`File Grid Open: imported ${imported.length} file set${imported.length === 1 ? '' : 's'}: ` +
 			imported.map((set) => `"${set.name}"`).join(', ')
 	);
 }
 
-/**
+/*
  * Captures the files open in the editor grid as path entries with their columns/rows. Returns
  * undefined (after warning) when there is nothing to capture.
  */
-async function captureCurrentLayout(folder: vscode.WorkspaceFolder): Promise<FileSetPathEntry[] | undefined> {
+async function captureCurrentLayout(): Promise<FileSetPathEntry[] | undefined> {
 	// The file shown in each editor group: its active tab, else its first file tab.
 	const pathByViewColumn: Map<number, string> = new Map();
 	for (const group of vscode.window.tabGroups.all) {
@@ -605,7 +656,7 @@ async function captureCurrentLayout(folder: vscode.WorkspaceFolder): Promise<Fil
 		);
 		const shown: vscode.Tab | undefined = group.activeTab && fileTabs.includes(group.activeTab) ? group.activeTab : fileTabs[0];
 		if (shown) {
-			pathByViewColumn.set(group.viewColumn, toWorkspaceRelativePath(folder, (shown.input as vscode.TabInputText).uri));
+			pathByViewColumn.set(group.viewColumn, (shown.input as vscode.TabInputText).uri.fsPath);
 		}
 	}
 	if (pathByViewColumn.size === 0) {
@@ -627,21 +678,10 @@ async function captureCurrentLayout(folder: vscode.WorkspaceFolder): Promise<Fil
 	return positionsToEntries(layoutToPositions(layout), pathByViewColumn);
 }
 
-/** Creates a new set from the files currently open in the editor grid, preserving their columns/rows. */
+/* Creates a new set from the files currently open in the editor grid, preserving their columns/rows. */
 async function saveLayoutAsSet(): Promise<void> {
-	const folder: vscode.WorkspaceFolder | undefined = getPrimaryWorkspaceFolder();
-	if (!folder) {
-		vscode.window.showWarningMessage('File Grid Open: open a folder or workspace first.');
-		return;
-	}
-
-	const entries: FileSetPathEntry[] | undefined = await captureCurrentLayout(folder);
+	const entries: FileSetPathEntry[] | undefined = await captureCurrentLayout();
 	if (!entries) {
-		return;
-	}
-
-	const fileSets: FileSet[] | undefined = await loadFileSets();
-	if (!fileSets) {
 		return;
 	}
 
@@ -654,24 +694,28 @@ async function saveLayoutAsSet(): Promise<void> {
 		return;
 	}
 
+	const fileSets: FileSet[] | undefined = await loadFileSets();
+	if (!fileSets) {
+		return;
+	}
+
 	const finalName: string = uniqueName(
 		name.trim(),
 		fileSets.map((set) => set.name)
 	);
-	saveFileSets(folder, [...fileSets, { id: newFileSetId(), name: finalName, paths: entries }]);
+	saveFileSets([...fileSets, { id: newFileSetId(), name: finalName, paths: entries }]);
 	vscode.window.showInformationMessage(`File Grid Open: saved the current layout as "${finalName}".`);
 }
 
-/** Replaces a set's files with the ones currently open in the editor grid, after confirmation. */
+/* Replaces a set's files with the ones currently open in the editor grid, after confirmation. */
 async function updateSetFromLayout(id: string | undefined): Promise<void> {
 	const fileSets: FileSet[] | undefined = await loadFileSets();
-	const folder: vscode.WorkspaceFolder | undefined = getPrimaryWorkspaceFolder();
 	const target: FileSet | undefined = fileSets?.find((set) => set.id === id);
-	if (!fileSets || !folder || !target) {
+	if (!fileSets || !target) {
 		return;
 	}
 
-	const entries: FileSetPathEntry[] | undefined = await captureCurrentLayout(folder);
+	const entries: FileSetPathEntry[] | undefined = await captureCurrentLayout();
 	if (!entries) {
 		return;
 	}
@@ -686,16 +730,20 @@ async function updateSetFromLayout(id: string | undefined): Promise<void> {
 		return;
 	}
 
-	target.paths = entries;
-	saveFileSets(folder, fileSets);
+	const fresh: { fileSets: FileSet[]; target: FileSet } | undefined = await reloadTargetSet(id);
+	if (!fresh) {
+		return;
+	}
+
+	fresh.target.paths = entries;
+	saveFileSets(fresh.fileSets);
 }
 
-/** Pins or unpins a set's status bar item. */
+/* Pins or unpins a set's status bar item. */
 async function setPinned(id: string | undefined, pinned: boolean): Promise<void> {
 	const fileSets: FileSet[] | undefined = await loadFileSets();
-	const folder: vscode.WorkspaceFolder | undefined = getPrimaryWorkspaceFolder();
 	const target: FileSet | undefined = fileSets?.find((set) => set.id === id);
-	if (!fileSets || !folder || !target) {
+	if (!fileSets || !target) {
 		return;
 	}
 
@@ -704,10 +752,10 @@ async function setPinned(id: string | undefined, pinned: boolean): Promise<void>
 	} else {
 		delete target.pinned;
 	}
-	saveFileSets(folder, fileSets);
+	saveFileSets(fileSets);
 }
 
-/** Opens a single file from a set in an editor group the user picks, without opening the whole set. */
+/* Opens a single file from a set in an editor group the user picks, without opening the whole set. */
 async function openFileAt(item: FilePathItem): Promise<void> {
 	const fileSets: FileSet[] | undefined = await loadFileSets();
 	const target: FileSet | undefined = fileSets?.find((set) => set.id === item.setId);
@@ -747,18 +795,17 @@ async function openFileAt(item: FilePathItem): Promise<void> {
 	}
 
 	try {
-		await vscode.window.showTextDocument(resolveWorkspacePath(entry.path), { viewColumn: picked.viewColumn, preview: false });
+		await vscode.window.showTextDocument(resolveConfiguredUri(entry.path), { viewColumn: picked.viewColumn, preview: false });
 	} catch {
-		vscode.window.showWarningMessage(`Could not open: ${entry.path}`);
+		vscode.window.showWarningMessage(`File Grid Open: Could not open: ${entry.path}`);
 	}
 }
 
-/**
- * Expands glob entries (relative to the workspace, after filling in date tokens) into the matching files. Plain
- * entries pass through. A pattern with no matches is reported and contributes nothing.
+/*
+ * Expands glob entries (after filling in date tokens) into the matching files. Plain entries pass
+ * through. A pattern with no matches is reported and contributes nothing.
  */
-async function expandGlobs(entries: FileSetPathEntry[]): Promise<FileSetPathEntry[]> {
-	const folder: vscode.WorkspaceFolder | undefined = getPrimaryWorkspaceFolder();
+function expandGlobs(entries: FileSetPathEntry[]): FileSetPathEntry[] {
 	const result: FileSetPathEntry[] = [];
 	for (const entry of entries) {
 		if (!isGlobPattern(entry.path)) {
@@ -766,11 +813,12 @@ async function expandGlobs(entries: FileSetPathEntry[]): Promise<FileSetPathEntr
 			continue;
 		}
 
-		const found = folder ? await findGlobMatches(folder, entry) : undefined;
-		if (!found || found.matches.length === 0) {
-			vscode.window.showWarningMessage(
-				`File Grid Open: no files match "${found?.pattern ?? entry.path}" (patterns must be relative to the workspace).`
-			);
+		const found: GlobResult = findGlobMatches(entry);
+		if (found.truncated) {
+			vscode.window.showWarningMessage(`File Grid Open: the search for "${found.pattern}" was cut short because it covers too many folders.`);
+		}
+		if (found.matches.length === 0) {
+			vscode.window.showWarningMessage(`File Grid Open: no files match "${found.pattern}".`);
 			continue;
 		}
 		result.push(...expandGlobEntry(entry, found.matches));
@@ -778,12 +826,11 @@ async function expandGlobs(entries: FileSetPathEntry[]): Promise<FileSetPathEntr
 	return result;
 }
 
-/** Moves a set into an existing group, a new one, or out of its group, chosen from a quick pick. */
+/* Moves a set into an existing group, a new one, or out of its group, chosen from a quick pick. */
 async function moveToGroup(id: string | undefined): Promise<void> {
 	const fileSets: FileSet[] | undefined = await loadFileSets();
-	const folder: vscode.WorkspaceFolder | undefined = getPrimaryWorkspaceFolder();
 	const target: FileSet | undefined = fileSets?.find((set) => set.id === id);
-	if (!fileSets || !folder || !target || !target.id) {
+	if (!fileSets || !target || !target.id) {
 		return;
 	}
 
@@ -801,22 +848,34 @@ async function moveToGroup(id: string | undefined): Promise<void> {
 		return;
 	}
 
-	if (picked.action === 'existing' && picked.group) {
-		saveFileSets(folder, moveSetsIntoGroup(fileSets, [target.id], picked.group));
-	} else if (picked.action === 'new') {
+	let newGroup: string | undefined;
+	if (picked.action === 'new') {
 		const name: string | undefined = await vscode.window.showInputBox({
 			prompt: 'New group name',
 			validateInput: (value) => (value.trim() ? undefined : 'Name cannot be empty.')
 		});
-		if (name) {
-			saveFileSets(folder, assignGroup(fileSets, [target.id], name.trim()));
+		if (!name) {
+			return;
 		}
+		newGroup = name.trim();
+	}
+
+	const fresh: { fileSets: FileSet[]; target: FileSet } | undefined = await reloadTargetSet(id);
+	if (!fresh) {
+		return;
+	}
+
+	const targetId: string = target.id;
+	if (picked.action === 'existing' && picked.group) {
+		saveFileSets(moveSetsIntoGroup(fresh.fileSets, [targetId], picked.group));
+	} else if (newGroup !== undefined) {
+		saveFileSets(assignGroup(fresh.fileSets, [targetId], newGroup));
 	} else if (picked.action === 'none') {
-		saveFileSets(folder, assignGroup(fileSets, [target.id], undefined));
+		saveFileSets(assignGroup(fresh.fileSets, [targetId], undefined));
 	}
 }
 
-/** Prompts for a new name for a group and applies it to every set in it. */
+/* Prompts for a new name for a group and applies it to every set in it. */
 async function renameGroupCommand(oldName: string): Promise<void> {
 	const newName: string | undefined = await vscode.window.showInputBox({
 		prompt: `Rename group "${oldName}"`,
@@ -828,11 +887,10 @@ async function renameGroupCommand(oldName: string): Promise<void> {
 	}
 }
 
-/** Renames a group on every set in it; an empty new name removes the group and keeps its sets. */
+/* Renames a group on every set in it; an empty new name removes the group and keeps its sets. */
 async function changeGroup(oldName: string, newName: string): Promise<void> {
 	const fileSets: FileSet[] | undefined = await loadFileSets();
-	const folder: vscode.WorkspaceFolder | undefined = getPrimaryWorkspaceFolder();
-	if (fileSets && folder) {
-		saveFileSets(folder, renameGroup(fileSets, oldName, newName));
+	if (fileSets) {
+		saveFileSets(renameGroup(fileSets, oldName, newName));
 	}
 }

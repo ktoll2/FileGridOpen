@@ -1,6 +1,9 @@
 import * as assert from 'node:assert/strict';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import { test } from 'node:test';
 import { FileSet } from '../core/configFile';
+import * as setLogicModule from '../core/setLogic';
 import {
 	duplicateFileSet,
 	exportFileSet,
@@ -59,7 +62,7 @@ test('exportFileSet / importFileSets: round-trips with a fresh id and a non-coll
 	assert.equal('id' in JSON.parse(text), false);
 	assert.equal('openOnStartup' in JSON.parse(text), false);
 
-	const [imported]: FileSet[] = importFileSets(text, [original]);
+	const [imported] = importFileSets(text, [original]);
 	assert.equal(imported.name, 'Set 2');
 	assert.ok(imported.id && imported.id !== 'one');
 	assert.deepEqual(imported.paths, original.paths);
@@ -70,10 +73,7 @@ test('importFileSets: accepts an array, numbers duplicates among themselves, rej
 		{ name: 'X', paths: [] },
 		{ name: 'X', paths: [] }
 	]);
-	assert.deepEqual(
-		importFileSets(text, []).map((set) => set.name),
-		['X', 'X 2']
-	);
+	assert.deepEqual(importFileSets(text, []).map((set) => set.name), ['X', 'X 2']);
 	assert.throws(() => importFileSets('not json', []), /valid JSON/);
 	assert.throws(() => importFileSets('[]', []), /no file sets/);
 	assert.throws(() => importFileSets('{"name": 1}', []), /must be an object/);
@@ -84,34 +84,28 @@ test('findMissingPaths: unique, skips blank paths', () => {
 		{ name: 'A', paths: [{ path: 'gone.ts' }, { path: 'here.ts' }, { path: '' }] },
 		{ name: 'B', paths: [{ path: 'gone.ts' }] }
 	];
-	assert.deepEqual(
-		findMissingPaths(sets, (p) => p === 'gone.ts' || p === ''),
-		['gone.ts']
-	);
+	assert.deepEqual(findMissingPaths(sets, (p: string) => p === 'gone.ts' || p === ''), ['gone.ts']);
 });
 
 test('layoutToPositions: columns with stacked rows, flat columns, vertical and irregular layouts', () => {
 	assert.deepEqual(layoutToPositions({ orientation: 0, groups: [{ size: 1 }] }), [{ viewColumn: 1, column: 0 }]);
-	assert.deepEqual(
-		layoutToPositions({ orientation: 0, groups: [{ size: 0.5, groups: [{ size: 0.5 }, { size: 0.5 }] }, { size: 0.5 }] }),
-		[
-			{ viewColumn: 1, column: 0, row: 0 },
-			{ viewColumn: 2, column: 0, row: 1 },
-			{ viewColumn: 3, column: 1 }
-		]
-	);
+
+	assert.deepEqual(layoutToPositions({ orientation: 0, groups: [{ size: 0.5, groups: [{ size: 0.5 }, { size: 0.5 }] }, { size: 0.5 }] }), [
+		{ viewColumn: 1, column: 0, row: 0 },
+		{ viewColumn: 2, column: 0, row: 1 },
+		{ viewColumn: 3, column: 1 }
+	]);
+
 	assert.deepEqual(layoutToPositions({ orientation: 1, groups: [{ size: 0.5 }, { size: 0.5 }] }), [
 		{ viewColumn: 1, column: 0, row: 0 },
 		{ viewColumn: 2, column: 0, row: 1 }
 	]);
-	assert.deepEqual(
-		layoutToPositions({ orientation: 1, groups: [{ size: 0.5, groups: [{}, {}] }, { size: 0.5 }] }),
-		[
-			{ viewColumn: 1, column: 0 },
-			{ viewColumn: 2, column: 1 },
-			{ viewColumn: 3, column: 2 }
-		]
-	);
+
+	assert.deepEqual(layoutToPositions({ orientation: 1, groups: [{ size: 0.5, groups: [{}, {}] }, { size: 0.5 }] }), [
+		{ viewColumn: 1, column: 0 },
+		{ viewColumn: 2, column: 1 },
+		{ viewColumn: 3, column: 2 }
+	]);
 });
 
 test('positionsToEntries: skips groups without a file and keeps row only where set', () => {
@@ -121,7 +115,7 @@ test('positionsToEntries: skips groups without a file and keeps row only where s
 			{ viewColumn: 2, column: 0, row: 1 },
 			{ viewColumn: 3, column: 1 }
 		],
-		new Map([
+		new Map<number, string>([
 			[1, 'a.ts'],
 			[3, 'c.ts']
 		])
@@ -132,8 +126,8 @@ test('positionsToEntries: skips groups without a file and keeps row only where s
 	]);
 });
 
-const named = (id: string, ...paths: string[]): FileSet => ({ id, name: id, paths: paths.map((p) => ({ path: p })) });
-const ids = (sets: FileSet[]): string[] => sets.map((set) => set.id as string);
+const named = (id: string, ...paths: string[]): FileSet => ({ id, name: id, paths: paths.map((p: string) => ({ path: p })) });
+const ids = (sets: FileSet[]): (string | undefined)[] => sets.map((set: FileSet) => set.id);
 const pathsOf = (set: FileSet): string[] => set.paths.map((entry) => entry.path);
 
 test('isGlobPattern: * ? { are globs, brackets in names are not', () => {
@@ -175,18 +169,14 @@ test('moveSets: takes the target slot going up or down, keeps block order, ignor
 
 test('moveFiles: reorders within a set and moves between sets without mutating the input', () => {
 	const sets: FileSet[] = [named('s1', 'a', 'b', 'c'), named('s2', 'x')];
+
 	const reordered: FileSet[] = moveFiles(sets, [{ setId: 's1', index: 2 }], 's1', 0);
 	assert.deepEqual(pathsOf(reordered[0]), ['c', 'a', 'b']);
 
 	const down: FileSet[] = moveFiles(sets, [{ setId: 's1', index: 0 }], 's1', 2);
 	assert.deepEqual(pathsOf(down[0]), ['b', 'a', 'c']);
 
-	const across: FileSet[] = moveFiles(
-		sets,
-		[{ setId: 's1', index: 0 }, { setId: 's1', index: 2 }],
-		's2',
-		0
-	);
+	const across: FileSet[] = moveFiles(sets, [{ setId: 's1', index: 0 }, { setId: 's1', index: 2 }], 's2', 0);
 	assert.deepEqual(pathsOf(across[0]), ['b']);
 	assert.deepEqual(pathsOf(across[1]), ['a', 'c', 'x']);
 
@@ -254,9 +244,96 @@ test('assignGroup / renameGroup / groupNames', () => {
 	assert.equal(grouped[0].group, 'G');
 	assert.equal(sets[0].group, undefined);
 	assert.equal(assignGroup(grouped, ['a'], undefined)[0].group, undefined);
-
 	assert.deepEqual(groupNames(renameGroup(grouped, 'G', 'H')), ['H']);
 	assert.equal('group' in renameGroup(grouped, 'G', '')[1], false);
+});
+
+// New contract (spec 3.5): resolveFilePath(baseDir, filePath); callers pass the home directory.
+const resolveFilePath = (setLogicModule as unknown as { resolveFilePath: (baseDir: string, filePath: string) => string }).resolveFilePath;
+
+test('resolveFilePath: a lone "~" is the home directory', () => {
+	assert.equal(resolveFilePath('/base', '~'), os.homedir());
+});
+
+test('resolveFilePath: "~/" and "~\\" prefixes expand to the home directory', () => {
+	assert.equal(resolveFilePath('/base', '~/docs/a.txt'), path.join(os.homedir(), 'docs', 'a.txt'));
+	assert.equal(resolveFilePath('/base', '~\\docs\\a.txt').startsWith(os.homedir()), true);
+	assert.equal(resolveFilePath('/base', '~\\docs\\a.txt').includes('~'), false);
+});
+
+test('resolveFilePath: an absolute path is returned as is', () => {
+	assert.equal(resolveFilePath('/base', '/etc/hosts'), '/etc/hosts');
+});
+
+test('resolveFilePath: a relative path is joined to baseDir', () => {
+	assert.equal(resolveFilePath('/base', 'src/a.ts'), path.join('/base', 'src', 'a.ts'));
+	assert.equal(resolveFilePath('/other', 'a.ts'), path.join('/other', 'a.ts'));
+});
+
+test('resolveFilePath: "~user/x" and "a~b" are not home paths', () => {
+	assert.equal(resolveFilePath('/base', '~user/x'), path.join('/base', '~user', 'x'));
+	assert.equal(resolveFilePath('/base', 'a~b'), path.join('/base', 'a~b'));
+});
+
+test('resolveFilePath: "~~" is relative, not a home path', () => {
+	assert.equal(resolveFilePath('/base', '~~'), path.join('/base', '~~'));
+	assert.equal(resolveFilePath('/base', '~~/x'), path.join('/base', '~~', 'x'));
+});
+
+test('resolveFilePath: a Windows-style "~\\x" expands to the home directory', () => {
+	const resolved: string = resolveFilePath('/base', '~\\x');
+	assert.ok(resolved.startsWith(os.homedir()));
+	assert.ok(!resolved.includes('~'));
+	assert.ok(!resolved.startsWith('/base'));
+});
+
+const excludeExistingPaths = (
+	setLogicModule as unknown as {
+		excludeExistingPaths: (fileSet: FileSet, paths: string[], homeDir: string, caseInsensitive: boolean) => string[];
+	}
+).excludeExistingPaths;
+
+test('excludeExistingPaths: returns all paths when the set is empty', () => {
+	assert.deepEqual(excludeExistingPaths(named('s'), ['/a/x.ts', '/a/y.ts'], '/home/me', false), ['/a/x.ts', '/a/y.ts']);
+});
+
+test('excludeExistingPaths: drops paths already present as absolute entries, preserving order', () => {
+	const set: FileSet = named('s', '/a/y.ts');
+	assert.deepEqual(excludeExistingPaths(set, ['/a/z.ts', '/a/y.ts', '/a/x.ts'], '/home/me', false), ['/a/z.ts', '/a/x.ts']);
+});
+
+test('excludeExistingPaths: a relative entry matches its absolute form resolved against homeDir', () => {
+	const set: FileSet = named('s', 'src/a.ts');
+	const abs: string = path.join('/home/me', 'src', 'a.ts');
+	assert.deepEqual(excludeExistingPaths(set, [abs, '/other/b.ts'], '/home/me', false), ['/other/b.ts']);
+});
+
+test('excludeExistingPaths: a "~/x.ts" entry matches the absolute path under the home directory', () => {
+	const set: FileSet = named('s', '~/x.ts');
+	const abs: string = path.join(os.homedir(), 'x.ts');
+	assert.deepEqual(excludeExistingPaths(set, [abs, '/other/x.ts'], os.homedir(), false), ['/other/x.ts']);
+});
+
+test('excludeExistingPaths: "~foo" entries are relative to homeDir, not the real home', () => {
+	const set: FileSet = named('s', '~foo/x.ts');
+	const abs: string = path.join('/home/me', '~foo', 'x.ts');
+	assert.deepEqual(excludeExistingPaths(set, [abs], '/home/me', false), []);
+});
+
+test('excludeExistingPaths: comparison is case-sensitive when caseInsensitive is false', () => {
+	const set: FileSet = named('s', '/A/File.ts');
+	assert.deepEqual(excludeExistingPaths(set, ['/a/file.ts'], '/home/me', false), ['/a/file.ts']);
+});
+
+test('excludeExistingPaths: comparison ignores case when caseInsensitive is true', () => {
+	const set: FileSet = named('s', '/A/File.ts');
+	assert.deepEqual(excludeExistingPaths(set, ['/a/file.ts', '/a/other.ts'], '/home/me', true), ['/a/other.ts']);
+});
+
+test('excludeExistingPaths: returns nothing when every path is already in the set, and does not mutate the set', () => {
+	const set: FileSet = named('s', '/a/x.ts', '/a/y.ts');
+	assert.deepEqual(excludeExistingPaths(set, ['/a/y.ts', '/a/x.ts'], '/home/me', false), []);
+	assert.deepEqual(pathsOf(set), ['/a/x.ts', '/a/y.ts']);
 });
 
 test('moveSetsIntoGroup: lands after the last set of the group, or at the end for a new group', () => {
@@ -273,4 +350,93 @@ test('moveSetsIntoGroup: lands after the last set of the group, or at the end fo
 
 	const intoNew: FileSet[] = moveSetsIntoGroup(sets, ['b', 'c'], 'New');
 	assert.deepEqual(ids(intoNew), ['a', 'd', 'e', 'b', 'c']);
+});
+
+// parseDragPayload is new (spec 6.5); accessed through a cast so the file compiles before it exists.
+type DragPayloadShape = { kind: 'sets'; ids: string[] } | { kind: 'files'; refs: { setId: string; index: number }[] };
+const parseDragPayload: (text: string) => DragPayloadShape | undefined = (
+	setLogicModule as unknown as { parseDragPayload: (text: string) => DragPayloadShape | undefined }
+).parseDragPayload;
+
+test('parseDragPayload: a valid sets payload is returned with only known fields', () => {
+	assert.deepEqual(parseDragPayload(JSON.stringify({ kind: 'sets', ids: ['a', 'b'], extra: 1 })), { kind: 'sets', ids: ['a', 'b'] });
+});
+
+test('parseDragPayload: a valid files payload is returned with only known fields', () => {
+	const text: string = JSON.stringify({ kind: 'files', refs: [{ setId: 's1', index: 0, extra: true }, { setId: 's2', index: 3 }], extra: 1 });
+	assert.deepEqual(parseDragPayload(text), {
+		kind: 'files',
+		refs: [{ setId: 's1', index: 0 }, { setId: 's2', index: 3 }]
+	});
+});
+
+test('parseDragPayload: empty ids and refs arrays are valid', () => {
+	assert.deepEqual(parseDragPayload('{"kind":"sets","ids":[]}'), { kind: 'sets', ids: [] });
+	assert.deepEqual(parseDragPayload('{"kind":"files","refs":[]}'), { kind: 'files', refs: [] });
+});
+
+test('parseDragPayload: invalid JSON returns undefined without throwing', () => {
+	assert.equal(parseDragPayload('not json'), undefined);
+	assert.equal(parseDragPayload(''), undefined);
+	assert.equal(parseDragPayload('{"kind":'), undefined);
+});
+
+test('parseDragPayload: JSON that is not an object returns undefined', () => {
+	for (const text of ['null', '42', '"sets"', 'true', '[]', '[{"kind":"sets","ids":[]}]']) {
+		assert.equal(parseDragPayload(text), undefined, text);
+	}
+});
+
+test('parseDragPayload: an unknown or missing kind returns undefined', () => {
+	assert.equal(parseDragPayload('{"kind":"other","ids":[]}'), undefined);
+	assert.equal(parseDragPayload('{"kind":5,"ids":[]}'), undefined);
+	assert.equal(parseDragPayload('{"ids":[]}'), undefined);
+	assert.equal(parseDragPayload('{}'), undefined);
+});
+
+test('parseDragPayload: ids that is missing or not an array returns undefined', () => {
+	assert.equal(parseDragPayload('{"kind":"sets"}'), undefined);
+	assert.equal(parseDragPayload('{"kind":"sets","ids":"a"}'), undefined);
+	assert.equal(parseDragPayload('{"kind":"sets","ids":{"0":"a"}}'), undefined);
+});
+
+test('parseDragPayload: ids containing a non-string returns undefined', () => {
+	assert.equal(parseDragPayload('{"kind":"sets","ids":["a",1]}'), undefined);
+	assert.equal(parseDragPayload('{"kind":"sets","ids":["a",null]}'), undefined);
+});
+
+test('parseDragPayload: ids containing an empty string returns undefined', () => {
+	assert.equal(parseDragPayload('{"kind":"sets","ids":["a",""]}'), undefined);
+});
+
+test('parseDragPayload: refs that is missing or not an array returns undefined', () => {
+	assert.equal(parseDragPayload('{"kind":"files"}'), undefined);
+	assert.equal(parseDragPayload('{"kind":"files","refs":"x"}'), undefined);
+	assert.equal(parseDragPayload('{"kind":"files","refs":{"setId":"a","index":0}}'), undefined);
+});
+
+test('parseDragPayload: a null or non-object ref returns undefined', () => {
+	assert.equal(parseDragPayload('{"kind":"files","refs":[null]}'), undefined);
+	assert.equal(parseDragPayload('{"kind":"files","refs":["a"]}'), undefined);
+	assert.equal(parseDragPayload('{"kind":"files","refs":[5]}'), undefined);
+});
+
+test('parseDragPayload: a ref with a missing or non-string setId returns undefined', () => {
+	assert.equal(parseDragPayload('{"kind":"files","refs":[{"index":0}]}'), undefined);
+	assert.equal(parseDragPayload('{"kind":"files","refs":[{"setId":1,"index":0}]}'), undefined);
+	assert.equal(parseDragPayload('{"kind":"files","refs":[{"setId":null,"index":0}]}'), undefined);
+});
+
+test('parseDragPayload: a ref index that is not a non-negative integer returns undefined', () => {
+	assert.equal(parseDragPayload('{"kind":"files","refs":[{"setId":"a","index":-1}]}'), undefined);
+	assert.equal(parseDragPayload('{"kind":"files","refs":[{"setId":"a","index":1.5}]}'), undefined);
+	assert.equal(parseDragPayload('{"kind":"files","refs":[{"setId":"a","index":"1"}]}'), undefined);
+	assert.equal(parseDragPayload('{"kind":"files","refs":[{"setId":"a","index":null}]}'), undefined);
+	assert.equal(parseDragPayload('{"kind":"files","refs":[{"setId":"a"}]}'), undefined);
+	// NaN and Infinity are not representable in JSON; they arrive as null, which is also rejected.
+	assert.equal(parseDragPayload('{"kind":"files","refs":[{"setId":"a","index":NaN}]}'), undefined);
+});
+
+test('parseDragPayload: one bad ref invalidates the whole payload', () => {
+	assert.equal(parseDragPayload('{"kind":"files","refs":[{"setId":"a","index":0},{"setId":"b","index":-2}]}'), undefined);
 });

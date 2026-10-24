@@ -2,7 +2,7 @@
   "name": "FileGridOpen",
   "displayName": "File Grid Open",
   "description": "Open a configured set of files side by side, with layout you control",
-  "version": "0.0.1",
+  "version": "1.0.0",
   "publisher": "KirkTolleshaug",
   "license": "MIT",
   "icon": "resources/marketplace-icon.png",
@@ -60,6 +60,10 @@
       {
         "command": "fileGridOpen.addToSet",
         "title": "Add to File Grid Open Set..."
+      },
+      {
+        "command": "fileGridOpen.addActiveFileToSet",
+        "title": "File Grid Open: Add Current File to Set..."
       },
       {
         "command": "fileGridOpen.openSetItem",
@@ -150,11 +154,15 @@
     "viewsWelcome": [
       {
         "view": "fileGridOpenSets",
-        "contents": "No file sets configured.\n[Edit Configuration](command:fileGridOpen.editConfig)\n\nSets live in a per-workspace JSON file under your user config directory, not in the project."
+        "contents": "No file sets configured.\n[Edit Configuration](command:fileGridOpen.editConfig)\n\nSets live in one JSON file under your user config directory, not in the project, and are the same in every window."
       }
     ],
     "menus": {
       "commandPalette": [
+        {
+          "command": "fileGridOpen.addToSet",
+          "when": "false"
+        },
         {
           "command": "fileGridOpen.openSetItem",
           "when": "false"
@@ -312,6 +320,13 @@
           "when": "!explorerResourceIsFolder",
           "group": "7_fileGridOpen"
         }
+      ],
+      "editor/title/context": [
+        {
+          "command": "fileGridOpen.addToSet",
+          "when": "resourceScheme == file",
+          "group": "7_fileGridOpen"
+        }
       ]
     },
     "configuration": {
@@ -320,8 +335,8 @@
         "fileGridOpen.configPath": {
           "type": "string",
           "default": "",
-          "scope": "resource",
-          "markdownDescription": "Where this workspace's file-set config lives. Leave empty to use the default (a per-user config directory, outside the project). A relative path resolves against the workspace folder; `~` expands to your home directory."
+          "scope": "application",
+          "markdownDescription": "Where the one file-set config file (shared by every window) lives. Leave empty to use the default, `sets.json` in a per-user config directory. A relative path resolves against your home directory; `~` expands to your home directory."
         }
       }
     }

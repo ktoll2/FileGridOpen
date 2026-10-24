@@ -14,7 +14,6 @@ Save groups of files as named sets and open any set side by side in one click, l
 ## Requirements
 
 - VS Code 1.85 or later (or VSCodium)
-- A folder or workspace open, since file sets are stored per workspace
 
 ## Install
 
@@ -31,7 +30,7 @@ Save groups of files as named sets and open any set side by side in one click, l
 ## Getting started
 
 1. Click the **File Grid Open** icon in the Activity Bar.
-2. Create a set: right-click a file in the Explorer and choose **Add to File Grid Open Set...**, or use **Edit Configuration** in the view's title bar. You can also arrange your editors the way you like and run **File Grid Open: Save Current Layout as File Set...**.
+2. Create a set: right-click a file in the Explorer or on its editor tab and choose **Add to File Grid Open Set...** (or run **File Grid Open: Add Current File to Set...**), or use **Edit Configuration** in the view's title bar. You can also arrange your editors the way you like and run **File Grid Open: Save Current Layout as File Set...**.
 3. Click a set in the sidebar to open its files side by side.
 
 ![Clicking a set opens its files side by side](docs/screenshots/opentabs.png)
@@ -40,13 +39,13 @@ Save groups of files as named sets and open any set side by side in one click, l
 
 <img src="docs/screenshots/sidebar.png" align="left" hspace="26" alt="The File Sets sidebar">
 
-Sets are listed in the sidebar and expand to show their files; click a file to open just that file. A file that no longer exists is marked with a warning icon, and its set shows how many are missing.
+Sets are listed in the sidebar (the same list in every window, with or without a folder open) and expand to show their files; click a file to open just that file. A file that no longer exists is marked with a warning icon, and its set shows how many are missing.
 
 - **Right-click a set** to open, edit, rename, duplicate, pin to the status bar, update from the current layout, copy as JSON, move to a group, or delete it (with confirmation).
 - **Right-click a file** to remove it from its set, or open just that file in a chosen editor group: its configured position, the active group, beside it, or any open group.
 - **Groups** are sidebar folders. Use **Move to Group...** to file a set under one, then right-click the folder to rename it or remove it (the sets are kept).
 - **Drag and drop**: drag files from the Explorer onto a set to add them, drag sets to reorder them or onto a folder to group them, and drag files within a set or onto another set to move them.
-- **Status bar**: a button for the set you opened last, plus one for each set you pinned.
+- **Status bar**: a button for the set you opened last, plus one for each set you pinned. The last-opened set is remembered across windows.
 
 <br clear="left">
 
@@ -61,7 +60,8 @@ The set actions in the screenshot are in the sidebar's right-click menu. These c
 - **File Grid Open: Save Current Layout as File Set...**: create a set from the files open in the editor grid, keeping their columns and rows.
 - **File Grid Open: Import File Set from Clipboard**: add sets from JSON copied with **Copy File Set as JSON**.
 - **File Grid Open: Edit Configuration**: open the configuration editor.
-- **File Grid Open: Edit Configuration (JSON)**: open the raw config file, creating it with a starter example if it doesn't exist.
+- **File Grid Open: Add Current File to Set...**: add the file in the active editor to a set (also in the editor tab's right-click menu).
+- **File Grid Open: Edit Configuration (JSON)**: open the raw config file, creating it if it doesn't exist.
 - **File Grid Open: Refresh**: reload the sidebar.
 
 Save Current Layout and Import are also in the `...` menu of the sidebar's title bar. None of the commands have default keybindings; bind any of them in Keyboard Shortcuts.
@@ -82,13 +82,13 @@ Save Current Layout and Import are also in the `...` menu of the sidebar's title
 
 ## The config file
 
-File sets live outside your project, in your user config directory, with one JSON file per workspace named `<folder name>-<short hash of its path>.json`:
+File sets live outside your project, in one JSON file named `sets.json` in your user config directory. There is a single list of sets, identical in every window, and nothing depends on which folder (if any) is open:
 
-- Linux: `~/.config/FileGridOpen/workspaces/` (or `$XDG_CONFIG_HOME/FileGridOpen/workspaces/`)
-- macOS: `~/Library/Application Support/FileGridOpen/workspaces/`
-- Windows: `%APPDATA%\FileGridOpen\workspaces\`
+- Linux: `~/.config/FileGridOpen/sets.json` (or `$XDG_CONFIG_HOME/FileGridOpen/sets.json`)
+- macOS: `~/Library/Application Support/FileGridOpen/sets.json`
+- Windows: `%APPDATA%\FileGridOpen\sets.json`
 
-**Edit Configuration (JSON)** opens the right file for you. To store it somewhere else, set **File Grid Open: Config Path** (`fileGridOpen.configPath`): a relative value resolves against the workspace folder (so you can keep it in the project and commit it), and `~` expands to your home directory. In a multi-root workspace the first folder owns the config, and relative paths resolve against it.
+**Edit Configuration (JSON)** opens the right file for you. To store it somewhere else (for example in a synced folder), set **File Grid Open: Config Path** (`fileGridOpen.configPath`). It is an application setting, so it applies to every window: `~` expands to your home directory, and a relative value resolves against your home directory. `sets.json` can also be a symbolic link into a synced or dotfiles folder; saving updates the file it points to and keeps the link in place.
 
 The file is a JSON array of sets:
 
@@ -100,24 +100,24 @@ The file is a JSON array of sets:
     "group": "Frontend",
     "pinned": true,
     "paths": [
-      { "path": "src/components/Button.tsx", "column": 0, "row": 0 },
-      { "path": "src/components/Button.test.tsx", "column": 0, "row": 1 },
-      { "path": "src/components/Button.css", "column": 1 }
+      { "path": "~/projects/app/src/components/Button.tsx", "column": 0, "row": 0 },
+      { "path": "~/projects/app/src/components/Button.test.tsx", "column": 0, "row": 1 },
+      { "path": "~/projects/app/src/components/Button.css", "column": 1 }
     ]
   }
 ]
 ```
 
-A path can also be written as a plain string (`"src/components/Button.css"`), but the extension saves it back as `{ "path": ... }` whenever it rewrites the file. Optional fields are left out when they aren't set.
+A path can also be written as a plain string (`"~/projects/app/src/components/Button.css"`), but the extension saves it back as `{ "path": ... }` whenever it rewrites the file. Optional fields are left out when they aren't set.
 
 | Set field | Meaning |
 | --- | --- |
 | `id` | Generated automatically (added the first time the file is read); leave it alone |
 | `name` | The set's name. Required |
-| `paths` | The files, relative to the workspace root or absolute. Required |
+| `paths` | The files: absolute, starting with `~`, or relative to your home directory (the extension always saves absolute paths). Required |
 | `group` | List the set under a sidebar folder of that name |
 | `closeOthers` | `true` closes every other editor before opening the set |
-| `openOnStartup` | `true` opens the set when the workspace loads (only the first flagged set opens) |
+| `openOnStartup` | `true` opens the set when a window starts (only the first flagged set opens, but it opens in every window, with or without a folder) |
 | `pinned` | `true` shows the set as its own button in the status bar |
 
 | Path field | Meaning |
@@ -139,10 +139,10 @@ The file is checked when it's read. Invalid JSON, a set without `name` or `paths
 
 ### Glob patterns and dates
 
-A path containing `*`, `?` or `{` is a glob pattern relative to the workspace, such as `src/components/Button.*`. When the set opens, it is replaced by the matching files (up to 100) in natural order, so `log.2` comes before `log.10`. Files hidden by your `files.exclude` setting aren't matched. Without a `column` the matches go into successive columns; with one they stack as rows in that column, starting at the entry's `row` (or 0). A pattern that matches nothing shows a warning. Brackets aren't special, so `pages/[id].tsx` is a literal name.
+A path containing `*`, `?` or `{` is a glob pattern, such as `~/projects/app/src/components/Button.*`. `*` matches within one folder level, `**` matches any number of folders, `?` matches one character and `{a,b}` matches either alternative. When the set opens, the pattern is replaced by the matching files (up to 100) in natural order, so `log.2` comes before `log.10`. The search walks the folder before the first glob segment, skips `.git` and `node_modules` (unless the pattern names them), doesn't follow symbolic links, and stops with a warning if it covers more than 50,000 entries. Your `files.exclude` setting isn't applied. Without a `column` the matches go into successive columns; with one they stack as rows in that column, starting at the entry's `row` (or 0). A pattern that matches nothing shows a warning. Brackets aren't special, so `pages/[id].tsx` is a literal name.
 
-Set `"newest": N` on a glob entry to open only the N most recently modified matches, still laid out in name order: `{ "path": "logs/All_*.log", "newest": 1 }`.
+Set `"newest": N` on a glob entry to open only the N most recently modified matches, still laid out in name order: `{ "path": "/var/log/app/All_*.log", "newest": 1 }`.
 
-Brace groups made only of `YYYY`, `MM`, `DD` and the separators `-`, `_` and `.` are replaced with today's local date before the pattern runs: `{YYYY-MM-DD}` becomes `2026-10-03` and `{YYYYMMDD}` becomes `20261003`. So `logs/All_{YYYY-MM-DD}*.log` matches today's `All_2026-10-03.log` and any rotations like `All_2026-10-03.1.log`. Add a day offset to move the date: `{YYYY-MM-DD-1}` is yesterday and `{YYYYMMDD+7}` is a week from now. Other braces, like `{a,b}`, work as normal glob alternatives.
+Brace groups made only of `YYYY`, `MM`, `DD` and the separators `-`, `_` and `.` are replaced with today's local date before the pattern runs: `{YYYY-MM-DD}` becomes `2026-10-03` and `{YYYYMMDD}` becomes `20261003`. So `/var/log/app/All_{YYYY-MM-DD}*.log` matches today's `All_2026-10-03.log` and any rotations like `All_2026-10-03.1.log`. Add a day offset to move the date: `{YYYY-MM-DD-1}` is yesterday and `{YYYYMMDD+7}` is a week from now. Other braces, like `{a,b}`, work as normal glob alternatives.
 
 In the sidebar, a glob entry lists the files it matches right now, with a count ("3 matches", or "1 of 7 matches" when `newest` limits it). The list refreshes when you refresh the view or the config changes, not when files appear on disk.

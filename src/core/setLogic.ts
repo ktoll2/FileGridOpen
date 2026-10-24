@@ -1,4 +1,4 @@
-import * as path from 'path';
+import { resolveConfiguredPath } from './configPaths';
 import { FileSet, FileSetPathEntry, newFileSetId, parseFileSets, serializeFileSet } from './configFile';
 import { ORIENTATION_HORIZONTAL } from './layout';
 
@@ -8,7 +8,7 @@ import { ORIENTATION_HORIZONTAL } from './layout';
  * self-contained (no references to anything else in this module).
  */
 
-/** Returns baseName if unused, else "baseName N" with the lowest free N >= 2. */
+/* Returns baseName if unused, else "baseName N" with the lowest free N >= 2. */
 export function uniqueName(baseName: string, takenNames: string[]): string {
 	const taken: Set<string> = new Set(takenNames);
 	if (!taken.has(baseName)) {
@@ -22,7 +22,7 @@ export function uniqueName(baseName: string, takenNames: string[]): string {
 	return baseName + ' ' + n;
 }
 
-/** Returns a copy of the array with the item at `from` moved to `to`; out-of-range moves return it unchanged. */
+/* Returns a copy of the array with the item at `from` moved to `to`; out-of-range moves return it unchanged. */
 export function moveItem<T>(items: T[], from: number, to: number): T[] {
 	const result: T[] = items.slice();
 	if (from < 0 || from >= result.length || to < 0 || to >= result.length) {
@@ -34,7 +34,7 @@ export function moveItem<T>(items: T[], from: number, to: number): T[] {
 	return result;
 }
 
-/** A copy of the set with a new id and a unique name; it never inherits "open on startup". */
+/* A copy of the set with a new id and a unique name; it never inherits "open on startup". */
 export function duplicateFileSet(fileSet: FileSet, existing: FileSet[]): FileSet {
 	const copy: FileSet = JSON.parse(JSON.stringify(fileSet));
 	copy.id = newFileSetId();
@@ -47,7 +47,7 @@ export function duplicateFileSet(fileSet: FileSet, existing: FileSet[]): FileSet
 	return copy;
 }
 
-/** JSON text for sharing one set: no id (a new one is assigned on import) and no per-user flags. */
+/* JSON text for sharing one set: no id (a new one is assigned on import) and no per-user flags. */
 export function exportFileSet(fileSet: FileSet): string {
 	const serialized: Record<string, unknown> = serializeFileSet(fileSet);
 	delete serialized.id;
@@ -56,7 +56,7 @@ export function exportFileSet(fileSet: FileSet): string {
 	return JSON.stringify(serialized, null, 2);
 }
 
-/**
+/*
  * Parses exported JSON (one set or an array of sets) into new sets with fresh ids and names that
  * don't collide with `existing` or each other. Throws a user-readable error for invalid input.
  */
@@ -84,7 +84,7 @@ export function importFileSets(text: string, existing: FileSet[]): FileSet[] {
 	});
 }
 
-/**
+/*
  * Whether a configured path is a glob pattern (contains "*", "?" or "{") to be expanded when the set
  * opens. "[" is deliberately not a glob character, so names like "[id].tsx" stay literal.
  */
@@ -92,7 +92,7 @@ export function isGlobPattern(filePath: string): boolean {
 	return /[*?{]/.test(filePath);
 }
 
-/**
+/*
  * Turns a glob entry and its (already sorted) matches into concrete entries. Without a column the
  * matches fan out into successive columns; with one they stack as rows in that column, starting at
  * the entry's row (or 0).
@@ -110,7 +110,7 @@ export function expandGlobEntry(entry: FileSetPathEntry, matches: string[]): Fil
 	return matches.map((match, i) => ({ path: match, column: entry.column, row: startRow + i }));
 }
 
-/**
+/*
  * Replaces date tokens in a path with the given (local) date. A token is a brace group made only of
  * YYYY, MM, DD and the separators "-", "_" and ".", optionally followed by a day offset:
  * "{YYYY-MM-DD}" becomes "2026-10-03", "{YYYYMMDD}" becomes "20261003", and "{YYYY-MM-DD-1}" is
@@ -132,7 +132,7 @@ export function expandDateTokens(filePath: string, now: Date): string {
 	});
 }
 
-/** The `count` most recently modified paths (ties broken by natural name order), in natural order. */
+/* The `count` most recently modified paths (ties broken by natural name order), in natural order. */
 export function selectNewest(files: { path: string; mtime: number }[], count: number): string[] {
 	return files
 		.slice()
@@ -142,7 +142,7 @@ export function selectNewest(files: { path: string; mtime: number }[], count: nu
 		.sort(naturalCompare);
 }
 
-/** Sets (or, for undefined, clears) the group of the sets with the given ids; returns a new array. */
+/* Sets (or, for undefined, clears) the group of the sets with the given ids; returns a new array. */
 export function assignGroup(sets: FileSet[], ids: string[], group: string | undefined): FileSet[] {
 	return sets.map((set) => {
 		if (!set.id || !ids.includes(set.id)) {
@@ -158,7 +158,7 @@ export function assignGroup(sets: FileSet[], ids: string[], group: string | unde
 	});
 }
 
-/**
+/*
  * Moves the sets into a group, placing them after the group's last existing set (or at the end if
  * the group is new). The dragged sets keep their relative order.
  */
@@ -177,7 +177,7 @@ export function moveSetsIntoGroup(sets: FileSet[], ids: string[], group: string)
 	return remaining;
 }
 
-/** Renames a group (merging into an existing one of that name); an empty new name ungroups the sets. */
+/* Renames a group (merging into an existing one of that name); an empty new name ungroups the sets. */
 export function renameGroup(sets: FileSet[], oldName: string, newName: string): FileSet[] {
 	return sets.map((set) => {
 		if (set.group !== oldName) {
@@ -193,14 +193,14 @@ export function renameGroup(sets: FileSet[], oldName: string, newName: string): 
 	});
 }
 
-/** Distinct group names in the order they first appear. */
+/* Distinct group names in the order they first appear. */
 export function groupNames(sets: FileSet[]): string[] {
 	return [...new Set(sets.flatMap((set) => (set.group ? [set.group] : [])))];
 }
 
 const NATURAL_COLLATOR: Intl.Collator = new Intl.Collator('en', { numeric: true });
 
-/** Orders strings with embedded numbers by value, so "log.2" sorts before "log.10". */
+/* Orders strings with embedded numbers by value, so "log.2" sorts before "log.10". */
 export function naturalCompare(a: string, b: string): number {
 	return NATURAL_COLLATOR.compare(a, b);
 }
@@ -210,7 +210,54 @@ export interface FileRef {
 	index: number;
 }
 
-/**
+/* What a drag in the File Sets view carries: whole sets, or file entries of sets. */
+export type DragPayload = { kind: 'sets'; ids: string[] } | { kind: 'files'; refs: FileRef[] };
+
+/* Parses and fully validates drag payload text; returns undefined (never throws) for anything malformed. */
+export function parseDragPayload(text: string): DragPayload | undefined {
+	let data: unknown;
+	try {
+		data = JSON.parse(text);
+	} catch {
+		return undefined;
+	}
+	if (typeof data !== 'object' || data === null || Array.isArray(data)) {
+		return undefined;
+	}
+
+	const raw: Record<string, unknown> = data as Record<string, unknown>;
+	if (raw.kind === 'sets') {
+		const ids: unknown = raw.ids;
+		if (!Array.isArray(ids) || !ids.every((id) => typeof id === 'string' && id !== '')) {
+			return undefined;
+		}
+		return { kind: 'sets', ids: ids.slice() };
+	}
+
+	if (raw.kind === 'files') {
+		const refs: unknown = raw.refs;
+		if (!Array.isArray(refs)) {
+			return undefined;
+		}
+		const parsed: FileRef[] = [];
+		for (const ref of refs) {
+			if (typeof ref !== 'object' || ref === null) {
+				return undefined;
+			}
+			const setId: unknown = (ref as Record<string, unknown>).setId;
+			const index: unknown = (ref as Record<string, unknown>).index;
+			if (typeof setId !== 'string' || setId === '' || typeof index !== 'number' || !Number.isInteger(index) || index < 0) {
+				return undefined;
+			}
+			parsed.push({ setId, index });
+		}
+		return { kind: 'files', refs: parsed };
+	}
+
+	return undefined;
+}
+
+/*
  * Moves the sets with the given ids into the target set's slot: before it when moving up, after it
  * when moving down. The dragged sets keep their relative order. Returns a new array.
  */
@@ -228,7 +275,7 @@ export function moveSets(sets: FileSet[], ids: string[], targetId: string): File
 	return remaining;
 }
 
-/**
+/*
  * Moves file entries (possibly from several sets) into the target set, before `beforeIndex` or at
  * the end. Returns a deep copy of the sets; the input is not modified.
  */
@@ -262,7 +309,7 @@ export function moveFiles(sets: FileSet[], refs: FileRef[], targetSetId: string,
 	return result;
 }
 
-/** Adds paths not already in the set (before `beforeIndex` or at the end); returns how many were added. */
+/* Adds paths not already in the set (before `beforeIndex` or at the end); returns how many were added. */
 export function addPathsToSet(fileSet: FileSet, paths: string[], beforeIndex?: number): number {
 	const existing: Set<string> = new Set(fileSet.paths.map((entry) => entry.path));
 	const fresh: string[] = [...new Set(paths)].filter((p) => !existing.has(p));
@@ -270,13 +317,17 @@ export function addPathsToSet(fileSet: FileSet, paths: string[], beforeIndex?: n
 	return fresh.length;
 }
 
-/** A path relative to the folder with forward slashes, or the original absolute path if it is outside it. */
-export function toRelativePath(baseFolder: string, filePath: string): string {
-	const relative: string = path.relative(baseFolder, filePath).split(path.sep).join('/');
-	return relative.startsWith('..') ? filePath : relative;
+/*
+ * Drops the absolute paths the set already holds, comparing against its entries as resolved (so a
+ * "~/x.ts" or relative entry matches its absolute form). Windows paths compare case-insensitively.
+ */
+export function excludeExistingPaths(fileSet: FileSet, paths: string[], homeDir: string, caseInsensitive: boolean): string[] {
+	const normalize = (p: string): string => (caseInsensitive ? p.toLowerCase() : p);
+	const existing: Set<string> = new Set(fileSet.paths.map((entry) => normalize(resolveFilePath(homeDir, entry.path))));
+	return paths.filter((p) => !existing.has(normalize(p)));
 }
 
-/** Unique non-empty path strings from the sets for which `isMissing` returns true. */
+/* Unique non-empty path strings from the sets for which `isMissing` returns true. */
 export function findMissingPaths(fileSets: FileSet[], isMissing: (filePath: string) => boolean): string[] {
 	const missing: Set<string> = new Set();
 	for (const fileSet of fileSets) {
@@ -289,12 +340,15 @@ export function findMissingPaths(fileSets: FileSet[], isMissing: (filePath: stri
 	return [...missing];
 }
 
-/** Resolves a configured path (absolute, or relative to the workspace folder) to an absolute one. */
-export function resolveFilePath(baseFolder: string, filePath: string): string {
-	return path.isAbsolute(filePath) ? filePath : path.join(baseFolder, filePath);
+/*
+ * Resolves a configured path to an absolute one: a leading "~" (alone, or before a separator)
+ * expands to the home directory, absolute paths are kept, and relative ones join `baseDir`.
+ */
+export function resolveFilePath(baseDir: string, filePath: string): string {
+	return resolveConfiguredPath(filePath, baseDir);
 }
 
-/** Shape of the result of VS Code's `vscode.getEditorLayout` command. */
+/* Shape of the result of VS Code's `vscode.getEditorLayout` command. */
 export interface EditorLayoutNode {
 	size?: number;
 	groups?: EditorLayoutNode[];
@@ -306,10 +360,10 @@ export interface EditorLayout {
 }
 
 export interface GroupPosition {
-	/** 1-based editor group number, in VS Code's grid traversal order. */
+	/* 1-based editor group number, in VS Code's grid traversal order. */
 	viewColumn: number;
 	column: number;
-	/** Only set for groups stacked vertically within their column. */
+	/* Only set for groups stacked vertically within their column. */
 	row?: number;
 }
 
@@ -317,7 +371,7 @@ function leafCount(node: EditorLayoutNode): number {
 	return node.groups && node.groups.length > 0 ? node.groups.reduce((sum, child) => sum + leafCount(child), 0) : 1;
 }
 
-/**
+/*
  * Maps an editor grid layout to column/row positions per editor group. Top-level horizontal
  * children become columns and their sub-groups become rows. Layouts deeper or more irregular than
  * that are flattened to one column per group, since the config format can't express them.
@@ -350,7 +404,7 @@ export function layoutToPositions(layout: EditorLayout): GroupPosition[] {
 	return result;
 }
 
-/** Builds path entries from group positions and the file open in each group (by viewColumn). */
+/* Builds path entries from group positions and the file open in each group (by viewColumn). */
 export function positionsToEntries(positions: GroupPosition[], pathByViewColumn: Map<number, string>): FileSetPathEntry[] {
 	const entries: FileSetPathEntry[] = [];
 	for (const position of positions) {

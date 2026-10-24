@@ -1,31 +1,69 @@
 import * as fs from 'fs';
-import * as path from 'path';
+import * as os from 'os';
 import * as vscode from 'vscode';
-import { FileSet, ensureConfigFile, readFileSetsEnsuringIds, withIds, writeFileSets } from './config';
+import { FileSet, ensureConfigFile, readFileSets, readFileSetsEnsuringIds, withIds, writeFileSets } from './config';
+import { parseFileSetsPayload } from './core/configFile';
 import { findMissingPaths, moveItem, resolveFilePath, uniqueName } from './core/setLogic';
 import { findCollisions } from './layout';
 
 type InboundMessage =
-	| { type: 'save'; fileSets: FileSet[]; auto?: boolean; version: number }
-	| { type: 'browse'; setIndex: number; pathIndex: number }
+	// fileSets is untrusted page state; it is validated before use.
+	| { type: 'save'; fileSets: unknown; auto?: boolean; version: number; configPath: string }
+	| { type: 'browse'; setId: string; pathIndex: number }
 	| { type: 'confirmRemoveSet'; id: string; name: string }
 	| { type: 'openJson' };
 
 type OutboundMessage =
-	| { type: 'browseResult'; setIndex: number; pathIndex: number; path: string }
-	| { type: 'saved'; version: number; missing: string[] }
+	| { type: 'browseResult'; setId: string; pathIndex: number; path: string }
+	| { type: 'saved'; configPath: string; version: number; missing: string[] }
 	| { type: 'focusSet'; id: string }
 	| { type: 'removeSetConfirmed'; id: string }
-	| { type: 'reload'; fileSets: FileSet[]; missing: string[] }
+	| { type: 'reload'; configPath: string; fileSets: FileSet[]; missing: string[] }
+	| { type: 'pathChanged'; configPath: string; fileSets: FileSet[]; missing: string[] }
+	| { type: 'invalid'; configPath: string; message: string }
 	| { type: 'saveRejected'; messages: string[]; cells: { setIndex: number; pathIndex: number }[] };
 
 let activePanel: vscode.WebviewPanel | undefined;
-let activeConfigPath: string | undefined;
-let activeFolder: vscode.WorkspaceFolder | undefined;
+/** Resolves the current config path; called on every read/write since the setting can change while the editor is open. */
+let activeConfigPathGetter: (() => string) | undefined;
+
+/** Checks a raw webview message's shape and field types; returns undefined for anything malformed. */
+function parseInboundMessage(raw: unknown): InboundMessage | undefined {
+	if (typeof raw !== 'object' || raw === null) {
+		return undefined;
+	}
+
+	const message: Record<string, unknown> = raw as Record<string, unknown>;
+	switch (message.type) {
+		case 'save':
+			if (
+				typeof message.configPath !== 'string' ||
+				typeof message.version !== 'number' ||
+				(message.auto !== undefined && typeof message.auto !== 'boolean')
+			) {
+				return undefined;
+			}
+			return { type: 'save', fileSets: message.fileSets, auto: message.auto, version: message.version, configPath: message.configPath };
+		case 'browse':
+			if (typeof message.setId !== 'string' || typeof message.pathIndex !== 'number' || !Number.isInteger(message.pathIndex) || message.pathIndex < 0) {
+				return undefined;
+			}
+			return { type: 'browse', setId: message.setId, pathIndex: message.pathIndex };
+		case 'confirmRemoveSet':
+			if (typeof message.id !== 'string' || typeof message.name !== 'string') {
+				return undefined;
+			}
+			return { type: 'confirmRemoveSet', id: message.id, name: message.name };
+		case 'openJson':
+			return { type: 'openJson' };
+		default:
+			return undefined;
+	}
+}
 
 /** The configured paths, among those in the sets, that don't exist on disk. */
-function findMissing(folder: vscode.WorkspaceFolder, fileSets: FileSet[]): string[] {
-	return findMissingPaths(fileSets, (filePath) => !fs.existsSync(resolveFilePath(folder.uri.fsPath, filePath)));
+function findMissing(fileSets: FileSet[]): string[] {
+	return findMissingPaths(fileSets, (filePath) => !fs.existsSync(resolveFilePath(os.homedir(), filePath)));
 }
 
 /**
@@ -33,42 +71,48 @@ function findMissing(folder: vscode.WorkspaceFolder, fileSets: FileSet[]): strin
  * deleted from the sidebar or the file was edited elsewhere. The page ignores it while it has unsaved edits.
  */
 export function reloadConfigEditor(): void {
-	if (!activePanel || !activeConfigPath || !activeFolder) {
+	if (!activePanel || !activeConfigPathGetter) {
 		return;
 	}
 
+	postContents(activePanel, activeConfigPathGetter(), 'reload');
+}
+
+/** Sends the file's current contents (or, if unreadable, an invalid notice) tagged with the path they came from. */
+function postContents(panel: vscode.WebviewPanel, configPath: string, type: 'reload' | 'pathChanged'): void {
 	try {
-		const fileSets: FileSet[] = readFileSetsEnsuringIds(activeConfigPath);
-		const outbound: OutboundMessage = { type: 'reload', fileSets, missing: findMissing(activeFolder, fileSets) };
-		activePanel.webview.postMessage(outbound);
-	} catch {
-		// An unreadable config (e.g. mid-edit invalid JSON) leaves the editor showing its last good state.
+		const fileSets: FileSet[] = readFileSetsEnsuringIds(configPath);
+		const outbound: OutboundMessage = { type, configPath, fileSets, missing: findMissing(fileSets) };
+		panel.webview.postMessage(outbound);
+	} catch (error) {
+		// An unreadable config (e.g. mid-edit invalid JSON) locks the page so it cannot overwrite the file.
+		panel.webview.postMessage({ type: 'invalid', configPath, message: (error as Error).message } satisfies OutboundMessage);
 	}
 }
 
 /**
  * Opens (or reveals) a form-based editor for the file sets in a config file, as an alternative to
- * hand-editing the JSON. Only one instance is kept open at a time since there's one config file
- * per workspace folder. When focusSetId is given, the editor scrolls to and highlights that set.
+ * hand-editing the JSON. Only one instance is kept open at a time since there's one global config file. When focusSetId is given, the editor scrolls to and highlights that set.
  */
 export function openConfigEditor(
-	folder: vscode.WorkspaceFolder,
-	configPath: string,
+	getConfigPath: () => string,
 	openJson: () => Promise<void>,
 	focusSetId?: string
 ): void {
 	if (activePanel) {
 		activePanel.reveal();
+		reloadConfigEditor();
 		if (focusSetId !== undefined) {
 			activePanel.webview.postMessage({ type: 'focusSet', id: focusSetId } satisfies OutboundMessage);
 		}
 		return;
 	}
 
+	const initialPath: string = getConfigPath();
 	try {
-		ensureConfigFile(configPath);
+		ensureConfigFile(initialPath);
 	} catch (error) {
-		vscode.window.showErrorMessage(`File Grid Open: could not create ${configPath}: ${(error as Error).message}`);
+		vscode.window.showErrorMessage(`File Grid Open: could not create ${initialPath}: ${(error as Error).message}`);
 		return;
 	}
 
@@ -77,26 +121,45 @@ export function openConfigEditor(
 		retainContextWhenHidden: true
 	});
 	activePanel = panel;
-	activeConfigPath = configPath;
-	activeFolder = folder;
+	activeConfigPathGetter = getConfigPath;
 
-	let fileSets: FileSet[];
+	let fileSets: FileSet[] = [];
+	let initialError: string | undefined;
 	try {
-		fileSets = readFileSetsEnsuringIds(configPath);
+		fileSets = readFileSetsEnsuringIds(initialPath);
 	} catch (error) {
-		vscode.window.showErrorMessage(`File Grid Open: ${(error as Error).message}`);
-		fileSets = [];
+		initialError = (error as Error).message;
 	}
 
-	panel.webview.html = getHtml(fileSets, focusSetId, findMissing(folder, fileSets));
+	panel.webview.html = getHtml(initialPath, fileSets, focusSetId, findMissing(fileSets), initialError);
 
-	panel.webview.onDidReceiveMessage(async (message: InboundMessage) => {
+	const handleMessage = async (raw: unknown): Promise<void> => {
+		const message: InboundMessage | undefined = parseInboundMessage(raw);
+		if (!message) {
+			return;
+		}
+
 		switch (message.type) {
 			case 'save': {
+				// The page's state was loaded from another path (the setting changed): never write it here.
+				if (message.configPath !== getConfigPath()) {
+					postContents(panel, getConfigPath(), 'pathChanged');
+					return;
+				}
+
+				// Only what the next read would accept may be written.
+				const parsed: { fileSets: FileSet[] } | { error: string } = parseFileSetsPayload(message.fileSets);
+				if ('error' in parsed) {
+					const rejected: OutboundMessage = { type: 'saveRejected', messages: [parsed.error], cells: [] };
+					panel.webview.postMessage(rejected);
+					return;
+				}
+				const pageFileSets: FileSet[] = parsed.fileSets;
+
 				const collisionMessages: string[] = [];
 				const collisionCells: { setIndex: number; pathIndex: number }[] = [];
 
-				message.fileSets.forEach((fileSet, setIndex) => {
+				pageFileSets.forEach((fileSet, setIndex) => {
 					for (const collision of findCollisions(fileSet.paths)) {
 						collisionMessages.push(
 							`"${fileSet.name}": ${collision.paths.join(', ')} all target column ${collision.column}, row ${collision.row}.`
@@ -120,13 +183,22 @@ export function openConfigEditor(
 				}
 
 				try {
-					const toSave: FileSet[] = withIds(message.fileSets);
+					const configPath: string = message.configPath;
+					try {
+						// Never overwrite a file that does not currently parse; the user may be mid-edit.
+						readFileSets(configPath);
+					} catch (error) {
+						panel.webview.postMessage({ type: 'invalid', configPath, message: (error as Error).message } satisfies OutboundMessage);
+						return;
+					}
+					const toSave: FileSet[] = withIds(pageFileSets);
 					writeFileSets(configPath, toSave);
 					vscode.window.setStatusBarMessage('File Grid Open: configuration saved.', 2000);
 					panel.webview.postMessage({
 						type: 'saved',
+						configPath,
 						version: message.version,
-						missing: findMissing(folder, toSave)
+						missing: findMissing(toSave)
 					} satisfies OutboundMessage);
 				} catch (error) {
 					vscode.window.showErrorMessage(`File Grid Open: could not save: ${(error as Error).message}`);
@@ -135,7 +207,7 @@ export function openConfigEditor(
 			}
 			case 'browse': {
 				const picked = await vscode.window.showOpenDialog({
-					defaultUri: folder.uri,
+					defaultUri: vscode.Uri.file(os.homedir()),
 					canSelectMany: false,
 					openLabel: 'Select File'
 				});
@@ -144,12 +216,11 @@ export function openConfigEditor(
 					return;
 				}
 
-				const relative = path.relative(folder.uri.fsPath, file.fsPath).split(path.sep).join('/');
 				const outbound: OutboundMessage = {
 					type: 'browseResult',
-					setIndex: message.setIndex,
+					setId: message.setId,
 					pathIndex: message.pathIndex,
-					path: relative.startsWith('..') ? file.fsPath : relative
+					path: file.fsPath
 				};
 				panel.webview.postMessage(outbound);
 				return;
@@ -170,12 +241,19 @@ export function openConfigEditor(
 				await openJson();
 				return;
 		}
+	};
+
+	panel.webview.onDidReceiveMessage(async (raw: unknown) => {
+		try {
+			await handleMessage(raw);
+		} catch (error) {
+			vscode.window.showErrorMessage(`File Grid Open: ${error instanceof Error ? error.message : 'unexpected error.'}`);
+		}
 	});
 
 	panel.onDidDispose(() => {
 		activePanel = undefined;
-		activeConfigPath = undefined;
-		activeFolder = undefined;
+		activeConfigPathGetter = undefined;
 	});
 }
 
@@ -188,11 +266,13 @@ function getNonce(): string {
 	return text;
 }
 
-function getHtml(fileSets: FileSet[], focusSetId: string | undefined, missing: string[]): string {
+function getHtml(configPath: string, fileSets: FileSet[], focusSetId: string | undefined, missing: string[], initialError: string | undefined): string {
 	const nonce = getNonce();
+	const initialPath = JSON.stringify(configPath).replace(/</g, '\\u003c');
 	const initialFocus = JSON.stringify(focusSetId ?? null).replace(/</g, '\\u003c');
 	const initialMissing = JSON.stringify(missing).replace(/</g, '\\u003c');
 	const initialState = JSON.stringify(fileSets).replace(/</g, '\\u003c');
+	const initialInvalid = JSON.stringify(initialError ?? null).replace(/</g, '\\u003c');
 
 	return `<!DOCTYPE html>
 <html lang="en">
@@ -244,12 +324,19 @@ function getHtml(fileSets: FileSet[], focusSetId: string | undefined, missing: s
 (function () {
 	const vscode = acquireVsCodeApi();
 	let fileSets = ${initialState};
+	// The config path the page's state was loaded from; every save carries it so the extension can refuse a mismatch.
+	let loadedPath = ${initialPath};
 	let collisionCells = [];
 	let missingPaths = new Set(${initialMissing});
+	// While the config file cannot be read the page shows only the error and never saves.
+	let invalidMessage = ${initialInvalid};
 
 	// Shared with the extension (src/core/setLogic.ts) so the logic is tested once.
 	${uniqueName.toString()}
 	${moveItem.toString()}
+
+	// A non-negative whole number that survives a JSON round trip (rejects "-1", "1.5", "1e400").
+	function isWholeNumber(text) { return /^[0-9]+$/.test(text) && Number.isSafeInteger(Number(text)); }
 
 	function cellKey(setIndex, pathIndex) { return setIndex + ':' + pathIndex; }
 
@@ -265,11 +352,12 @@ function getHtml(fileSets: FileSet[], focusSetId: string | undefined, missing: s
 	let editVersion = 0;
 	let savedVersion = 0;
 	function scheduleSave() {
+		if (invalidMessage !== null) { return; }
 		clearTimeout(saveTimer);
 		editVersion++;
 		const version = editVersion;
 		saveTimer = setTimeout(() => {
-			vscode.postMessage({ type: 'save', fileSets, auto: true, version });
+			vscode.postMessage({ type: 'save', fileSets, auto: true, version, configPath: loadedPath });
 		}, 500);
 	}
 
@@ -307,6 +395,11 @@ function getHtml(fileSets: FileSet[], focusSetId: string | undefined, missing: s
 	function render() {
 		const container = document.getElementById('sets');
 		container.innerHTML = '';
+		document.getElementById('addSet').disabled = invalidMessage !== null;
+		if (invalidMessage !== null) {
+			setStatus('The configuration file cannot be read, so editing is disabled until it is fixed:\\n' + invalidMessage, 'error');
+			return;
+		}
 
 		const groupList = el('datalist', { id: 'groupList' });
 		[...new Set(fileSets.map((s) => s.group).filter(Boolean))].forEach((name) => groupList.appendChild(el('option', { value: name })));
@@ -392,7 +485,7 @@ function getHtml(fileSets: FileSet[], focusSetId: string | undefined, missing: s
 			});
 			const options = el('div', { className: 'options' }, [
 				el('label', { title: 'Close all other editors before opening this set' }, [closeOthersInput, document.createTextNode('Close other editors on open')]),
-				el('label', { title: 'Open this set automatically when the workspace loads' }, [openOnStartupInput, document.createTextNode('Open on startup')]),
+				el('label', { title: 'Open this set automatically when a window starts (in every window)' }, [openOnStartupInput, document.createTextNode('Open on startup')]),
 				el('label', { title: 'Show this set as a button in the status bar' }, [pinnedInput, document.createTextNode('Pin to status bar')]),
 				el('label', { title: 'Sidebar folder this set is listed under' }, [document.createTextNode('Group'), groupInput])
 			]);
@@ -401,19 +494,20 @@ function getHtml(fileSets: FileSet[], focusSetId: string | undefined, missing: s
 			setEl.dataset.setIndex = String(setIndex);
 
 			set.paths.forEach((entry, pathIndex) => {
-				const pathInput = el('input', { type: 'text', value: entry.path, placeholder: 'relative/or/absolute/path' });
+				const pathInput = el('input', { type: 'text', value: entry.path, placeholder: '/absolute/path or ~/path' });
 				pathInput.style.flex = '1';
 				pathInput.addEventListener('input', () => { fileSets[setIndex].paths[pathIndex].path = pathInput.value; scheduleSave(); });
 
 				const browseBtn = el('button', { className: 'secondary', textContent: 'Browse...' });
 				browseBtn.addEventListener('click', () => {
-					vscode.postMessage({ type: 'browse', setIndex, pathIndex });
+					vscode.postMessage({ type: 'browse', setId: set.id, pathIndex });
 				});
 
 				const colInput = el('input', { type: 'number', min: '0', value: entry.column !== undefined ? String(entry.column) : '' });
 				colInput.addEventListener('input', () => {
 					const v = colInput.value.trim();
-					fileSets[setIndex].paths[pathIndex].column = v === '' ? undefined : Number(v);
+					// Only a non-negative whole number is valid in the config file; anything else clears the value.
+					if (isWholeNumber(v)) { fileSets[setIndex].paths[pathIndex].column = Number(v); } else { delete fileSets[setIndex].paths[pathIndex].column; }
 					collisionCells = [];
 					setStatus('', '');
 					scheduleSave();
@@ -422,7 +516,7 @@ function getHtml(fileSets: FileSet[], focusSetId: string | undefined, missing: s
 				const rowInput = el('input', { type: 'number', min: '0', value: entry.row !== undefined ? String(entry.row) : '' });
 				rowInput.addEventListener('input', () => {
 					const v = rowInput.value.trim();
-					fileSets[setIndex].paths[pathIndex].row = v === '' ? undefined : Number(v);
+					if (isWholeNumber(v)) { fileSets[setIndex].paths[pathIndex].row = Number(v); } else { delete fileSets[setIndex].paths[pathIndex].row; }
 					collisionCells = [];
 					setStatus('', '');
 					scheduleSave();
@@ -494,6 +588,7 @@ function getHtml(fileSets: FileSet[], focusSetId: string | undefined, missing: s
 	}
 
 	document.getElementById('addSet').addEventListener('click', () => {
+		if (invalidMessage !== null) { return; }
 		fileSets.push({ id: crypto.randomUUID(), name: uniqueName('New set', fileSets.map((s) => s.name)), paths: [] });
 		render();
 		scheduleSave();
@@ -506,12 +601,18 @@ function getHtml(fileSets: FileSet[], focusSetId: string | undefined, missing: s
 	window.addEventListener('message', (event) => {
 		const message = event.data;
 		if (message.type === 'browseResult') {
-			fileSets[message.setIndex].paths[message.pathIndex].path = message.path;
-			render();
-			scheduleSave();
+			// The sets may have been replaced while the dialog was open; ignore a result whose target is gone.
+			const target = fileSets.find((set) => set.id === message.setId);
+			if (target && target.paths[message.pathIndex]) {
+				target.paths[message.pathIndex].path = message.path;
+				render();
+				scheduleSave();
+			}
 		} else if (message.type === 'focusSet') {
 			focusSet(message.id);
 		} else if (message.type === 'saved') {
+			// A confirmation for a save made before the path changed says nothing about the current file.
+			if (message.configPath !== loadedPath) { return; }
 			collisionCells = [];
 			savedVersion = message.version;
 			missingPaths = new Set(message.missing);
@@ -524,10 +625,36 @@ function getHtml(fileSets: FileSet[], focusSetId: string | undefined, missing: s
 				render();
 				scheduleSave();
 			}
+		} else if (message.type === 'invalid') {
+			clearTimeout(saveTimer);
+			loadedPath = message.configPath;
+			invalidMessage = message.message;
+			render();
+		} else if (message.type === 'pathChanged') {
+			// The config path changed: drop pending edits (they belong to the old file) and show the new file.
+			clearTimeout(saveTimer);
+			editVersion = 0;
+			savedVersion = 0;
+			loadedPath = message.configPath;
+			invalidMessage = null;
+			fileSets = message.fileSets;
+			collisionCells = [];
+			missingPaths = new Set(message.missing);
+			setStatus('The configuration path changed; showing the file at the new path.', '');
+			render();
 		} else if (message.type === 'reload') {
-			if (editVersion !== savedVersion || snapshot(message.fileSets) === snapshot(fileSets)) {
+			const wasInvalid = invalidMessage !== null;
+			if (message.configPath === loadedPath && !wasInvalid && (editVersion !== savedVersion || snapshot(message.fileSets) === snapshot(fileSets))) {
 				return;
 			}
+			if (message.configPath !== loadedPath) {
+				// Different file: pending edits are for the old path and must not be saved anywhere.
+				clearTimeout(saveTimer);
+				savedVersion = editVersion;
+				loadedPath = message.configPath;
+			}
+			invalidMessage = null;
+			editVersion = savedVersion;
 			fileSets = message.fileSets;
 			collisionCells = [];
 			missingPaths = new Set(message.missing);

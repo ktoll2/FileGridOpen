@@ -1,33 +1,42 @@
-import * as crypto from 'crypto';
 import * as os from 'os';
 import * as path from 'path';
 
-/** The user-level directory File Grid Open stores its config under, independent of any project. */
+/* The env value if it is a non-empty absolute path (per the XDG spec, anything else is ignored). */
+function absoluteEnvPath(value: string | undefined, isAbsolute: (p: string) => boolean): string | undefined {
+	return value !== undefined && value !== '' && isAbsolute(value) ? value : undefined;
+}
+
+/* The user-level directory File Grid Open stores its config under, independent of any project. */
 export function getConfigDirectory(platform: NodeJS.Platform = process.platform, env: NodeJS.ProcessEnv = process.env): string {
 	if (platform === 'win32') {
-		return path.join(env.APPDATA ?? path.join(os.homedir(), 'AppData', 'Roaming'), 'FileGridOpen');
+		// Judged by Windows rules whatever the host, since the value is a Windows path.
+		const appData: string | undefined = absoluteEnvPath(env.APPDATA, path.win32.isAbsolute);
+		return path.join(appData ?? path.join(os.homedir(), 'AppData', 'Roaming'), 'FileGridOpen');
 	}
 
 	if (platform === 'darwin') {
 		return path.join(os.homedir(), 'Library', 'Application Support', 'FileGridOpen');
 	}
 
-	return path.join(env.XDG_CONFIG_HOME ?? path.join(os.homedir(), '.config'), 'FileGridOpen');
+	const xdgConfigHome: string | undefined = absoluteEnvPath(env.XDG_CONFIG_HOME, path.isAbsolute);
+	return path.join(xdgConfigHome ?? path.join(os.homedir(), '.config'), 'FileGridOpen');
 }
 
-/**
- * The default on-disk location of a workspace folder's config file, under the user's config
- * directory rather than inside the project itself. Named from the folder's basename plus a short
- * hash of its full path, so same-named folders in different locations don't collide.
- */
-export function getDefaultConfigPath(folderPath: string): string {
-	const slug = path.basename(folderPath).replace(/[^a-zA-Z0-9._-]+/g, '-') || 'workspace';
-	const hash = crypto.createHash('sha256').update(folderPath).digest('hex').slice(0, 12);
-	return path.join(getConfigDirectory(), 'workspaces', `${slug}-${hash}.json`);
+/* The default on-disk location of the single, global config file. */
+export function getDefaultConfigPath(platform: NodeJS.Platform = process.platform, env: NodeJS.ProcessEnv = process.env): string {
+	return path.join(getConfigDirectory(platform, env), 'sets.json');
 }
 
-/** Expands a leading "~" and resolves a relative path against a workspace folder. */
-export function resolveConfiguredPath(configuredPath: string, folderPath: string): string {
-	const expanded = configuredPath.startsWith('~') ? path.join(os.homedir(), configuredPath.slice(1)) : configuredPath;
-	return path.isAbsolute(expanded) ? expanded : path.join(folderPath, expanded);
+/* Expands "~" (alone, or followed by "/" or "\\") to the home directory; any other path is returned unchanged. */
+export function expandHome(filePath: string): string {
+	if (filePath === '~' || filePath.startsWith('~/') || filePath.startsWith('~\\')) {
+		return path.join(os.homedir(), filePath.slice(1));
+	}
+	return filePath;
+}
+
+/* Expands a leading "~" and resolves a relative path against baseDir. */
+export function resolveConfiguredPath(configuredPath: string, baseDir: string): string {
+	const expanded: string = expandHome(configuredPath);
+	return path.isAbsolute(expanded) ? expanded : path.join(baseDir, expanded);
 }

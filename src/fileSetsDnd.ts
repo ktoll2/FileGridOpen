@@ -1,16 +1,25 @@
 import * as fs from 'fs';
+import * as os from 'os';
 import * as vscode from 'vscode';
-import { FileSet, getConfigPath, getPrimaryWorkspaceFolder, readFileSetsEnsuringIds, writeFileSets } from './config';
-import { FileRef, addPathsToSet, assignGroup, moveFiles, moveSets, moveSetsIntoGroup, toRelativePath } from './core/setLogic';
+import { FileSet, getConfigPath, readFileSetsEnsuringIds, writeFileSets } from './config';
+import {
+	DragPayload,
+	FileRef,
+	addPathsToSet,
+	assignGroup,
+	excludeExistingPaths,
+	moveFiles,
+	moveSets,
+	moveSetsIntoGroup,
+	parseDragPayload
+} from './core/setLogic';
 import { FilePathItem, FileSetItem, FileSetTreeNode, GroupItem } from './fileSetsProvider';
 
-/** Tree drag mime types must be "application/vnd.code.tree." plus the lowercased view id. */
+/* Tree drag mime types must be "application/vnd.code.tree." plus the lowercased view id. */
 export const SETS_MIME = 'application/vnd.code.tree.filegridopensets';
 const URI_LIST_MIME = 'text/uri-list';
 
-type DragPayload = { kind: 'sets'; ids: string[] } | { kind: 'files'; refs: FileRef[] };
-
-/**
+/*
  * Drag and drop for the File Sets view: reorder sets, move files within or between sets, and add
  * files dragged in from the Explorer.
  */
@@ -36,8 +45,7 @@ export class FileSetsDragAndDrop implements vscode.TreeDragAndDropController<Fil
 	}
 
 	async handleDrop(target: FileSetTreeNode | undefined, dataTransfer: vscode.DataTransfer): Promise<void> {
-		const folder: vscode.WorkspaceFolder | undefined = getPrimaryWorkspaceFolder();
-		if (!target || !folder) {
+		if (!target) {
 			return;
 		}
 
@@ -50,7 +58,20 @@ export class FileSetsDragAndDrop implements vscode.TreeDragAndDropController<Fil
 			return;
 		}
 
-		const configPath: string = getConfigPath(folder);
+		// All awaits happen before the config is read so a change made meanwhile is not overwritten.
+		const own: vscode.DataTransferItem | undefined = dataTransfer.get(SETS_MIME);
+		let payload: DragPayload | undefined;
+		if (own) {
+			payload = parseDragPayload(await own.asString());
+			if (!payload) {
+				// A malformed drag payload is ignored.
+				return;
+			}
+		}
+		const uriListItem: vscode.DataTransferItem | undefined = own ? undefined : dataTransfer.get(URI_LIST_MIME);
+		const uriListText: string | undefined = uriListItem ? await uriListItem.asString() : undefined;
+
+		const configPath: string = getConfigPath();
 		let fileSets: FileSet[];
 		try {
 			fileSets = readFileSetsEnsuringIds(configPath);
@@ -59,18 +80,15 @@ export class FileSetsDragAndDrop implements vscode.TreeDragAndDropController<Fil
 			return;
 		}
 
-		const own: vscode.DataTransferItem | undefined = dataTransfer.get(SETS_MIME);
 		if (targetGroup !== undefined) {
 			// Dropping sets on a group folder moves them into it; anything else is ignored.
-			const payload: DragPayload | undefined = own ? JSON.parse(await own.asString()) : undefined;
 			if (payload?.kind !== 'sets') {
 				return;
 			}
 			fileSets = moveSetsIntoGroup(fileSets, payload.ids, targetGroup);
 		} else if (!targetSetId) {
 			return;
-		} else if (own) {
-			const payload: DragPayload = JSON.parse(await own.asString());
+		} else if (payload) {
 			if (payload.kind === 'sets') {
 				// Dropping on another set reorders, and the moved sets join that set's group.
 				const targetGroupOfSet: string | undefined = fileSets.find((set) => set.id === targetSetId)?.group;
@@ -79,18 +97,18 @@ export class FileSetsDragAndDrop implements vscode.TreeDragAndDropController<Fil
 				fileSets = moveFiles(fileSets, payload.refs, targetSetId, beforeIndex);
 			}
 		} else {
-			const uriList: vscode.DataTransferItem | undefined = dataTransfer.get(URI_LIST_MIME);
 			const targetSet: FileSet | undefined = fileSets.find((set) => set.id === targetSetId);
-			if (!uriList || !targetSet) {
+			if (uriListText === undefined || !targetSet) {
 				return;
 			}
 
-			const paths: string[] = (await uriList.asString())
+			const dropped: string[] = uriListText
 				.split(/\r?\n/)
 				.filter((line) => line.trim() !== '' && !line.startsWith('#'))
 				.map((line) => vscode.Uri.parse(line.trim()))
 				.filter((uri) => uri.scheme === 'file' && isFile(uri.fsPath))
-				.map((uri) => toRelativePath(folder.uri.fsPath, uri.fsPath));
+				.map((uri) => uri.fsPath);
+			const paths: string[] = excludeExistingPaths(targetSet, dropped, os.homedir(), process.platform === 'win32');
 			const added: number = addPathsToSet(targetSet, paths, beforeIndex);
 			if (added === 0) {
 				vscode.window.showInformationMessage('File Grid Open: no new files to add (folders and files already in the set are skipped).');

@@ -2,30 +2,30 @@ import { randomUUID } from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 
-/** Label used in error messages; the on-disk filename itself is per-workspace (see configPaths.ts). */
+/* Label used in error messages; the on-disk location is set in configPaths.ts. */
 const CONFIG_LABEL = 'File Grid Open config';
 
 export interface FileSetPathEntry {
 	path: string;
-	/** 0-based sort key for horizontal placement. Entries without one auto-increment left to right. */
+	/* 0-based sort key for horizontal placement. Entries without one auto-increment left to right. */
 	column?: number;
-	/** 0-based sort key for vertical placement within a column. Omitted means the column's only row. */
+	/* 0-based sort key for vertical placement within a column. Omitted means the column's only row. */
 	row?: number;
-	/** For a glob path: open only this many of the most recently modified matches. */
+	/* For a glob path: open only this many of the most recently modified matches. */
 	newest?: number;
 }
 
 export interface FileSet {
-	/** Stable identifier used to target a set; names can change or (via hand edits) repeat. */
+	/* Stable identifier used to target a set; names can change or (via hand edits) repeat. */
 	id?: string;
 	name: string;
-	/** Sidebar folder this set is shown under; sets without one are listed at the top level. */
+	/* Sidebar folder this set is shown under; sets without one are listed at the top level. */
 	group?: string;
-	/** Close every other editor before opening this set. */
+	/* Close every other editor before opening this set. */
 	closeOthers?: boolean;
-	/** Open this set automatically when the workspace loads. */
+	/* Open this set automatically when a window starts. */
 	openOnStartup?: boolean;
-	/** Show this set as its own item in the status bar. */
+	/* Show this set as its own item in the status bar. */
 	pinned?: boolean;
 	paths: FileSetPathEntry[];
 }
@@ -67,7 +67,7 @@ function parsePathEntry(raw: unknown, setIndex: number, pathIndex: number): File
 	return result;
 }
 
-/** Reads and parses the config file, tolerating a missing file (returns an empty list). */
+/* Reads and parses the config file, tolerating a missing file (returns an empty list). */
 export function readFileSets(configPath: string): FileSet[] {
 	if (!fs.existsSync(configPath)) {
 		return [];
@@ -82,7 +82,7 @@ export function readFileSets(configPath: string): FileSet[] {
 	return parseFileSets(parsed);
 }
 
-/** Validates and normalizes an already-parsed array of file sets. */
+/* Validates and normalizes an already-parsed array of file sets. */
 export function parseFileSets(parsed: unknown[]): FileSet[] {
 	return parsed.map((entry, setIndex) => {
 		if (
@@ -106,7 +106,19 @@ export function parseFileSets(parsed: unknown[]): FileSet[] {
 	});
 }
 
-/** Copies the optional group and boolean flags from a raw entry onto the set, rejecting invalid values. */
+/* Like parseFileSets for untrusted input (e.g. a webview message): never throws, returns an error instead. */
+export function parseFileSetsPayload(payload: unknown): { fileSets: FileSet[] } | { error: string } {
+	if (!Array.isArray(payload)) {
+		return { error: `${CONFIG_LABEL} must contain a JSON array.` };
+	}
+	try {
+		return { fileSets: parseFileSets(payload) };
+	} catch (error) {
+		return { error: (error as Error).message };
+	}
+}
+
+/* Copies the optional group and boolean flags from a raw entry onto the set, rejecting invalid values. */
 function parseFlags(raw: unknown, setIndex: number, set: FileSet): FileSet {
 	const result: FileSet = { ...set };
 	const group: unknown = (raw as Record<string, unknown>).group;
@@ -134,17 +146,17 @@ function parseFlags(raw: unknown, setIndex: number, set: FileSet): FileSet {
 	return result;
 }
 
-/** Generates a new unique file set id. */
+/* Generates a new unique file set id. */
 export function newFileSetId(): string {
 	return randomUUID();
 }
 
-/** Returns the sets with an id on every entry, generating ids where missing. */
+/* Returns the sets with an id on every entry, generating ids where missing. */
 export function withIds(fileSets: FileSet[]): FileSet[] {
 	return fileSets.map((fileSet) => (fileSet.id ? fileSet : { ...fileSet, id: newFileSetId() }));
 }
 
-/**
+/*
  * Like readFileSets, but guarantees every set has an id. Sets missing one (e.g. a config written
  * before ids existed or edited by hand) get one generated and the file is rewritten so the ids stay stable.
  */
@@ -159,32 +171,83 @@ export function readFileSetsEnsuringIds(configPath: string): FileSet[] {
 	return withGeneratedIds;
 }
 
-const STARTER_CONFIG: FileSet[] = [
-	{
-		name: 'Example set',
-		paths: [{ path: 'src/example.ts' }, { path: 'src/example.test.ts' }]
-	}
-];
+const EMPTY_CONFIG: FileSet[] = [];
 
-/** Creates the config file (and its containing directory) with a starter example if missing. */
+/* Creates the config file (and its containing directory) as an empty array if missing. */
 export function ensureConfigFile(configPath: string): void {
 	if (fs.existsSync(configPath)) {
 		return;
 	}
 
-	fs.mkdirSync(path.dirname(configPath), { recursive: true });
-	fs.writeFileSync(configPath, JSON.stringify(STARTER_CONFIG, null, 2) + '\n', 'utf8');
+	// A dangling symlink is filled in at its real target rather than replaced.
+	const targetPath: string = resolveWriteTarget(configPath);
+	fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+	try {
+		// "wx" fails if the file appeared since the check, so an existing file is never overwritten.
+		fs.writeFileSync(targetPath, JSON.stringify(EMPTY_CONFIG, null, 2) + '\n', { encoding: 'utf8', flag: 'wx' });
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code !== 'EEXIST') {
+			throw error;
+		}
+	}
 }
 
-/** Serializes file sets back to the config file, creating its containing directory if needed. */
+/*
+ * The path a write to configPath should actually replace: the final target if configPath is a
+ * symlink (existing or dangling), otherwise configPath itself. Keeps the symlink intact.
+ */
+function resolveWriteTarget(configPath: string): string {
+	let current: string = configPath;
+	// Bounded so a symlink loop cannot spin forever.
+	for (let depth: number = 0; depth < 40; depth++) {
+		let isLink: boolean;
+		try {
+			isLink = fs.lstatSync(current).isSymbolicLink();
+		} catch {
+			return current;
+		}
+		if (!isLink) {
+			return current;
+		}
+		try {
+			return fs.realpathSync(current);
+		} catch {
+			// Dangling (or looping): follow one link by hand and retry from there.
+			current = path.resolve(path.dirname(current), fs.readlinkSync(current));
+		}
+	}
+	return current;
+}
+
+/* Serializes file sets back to the config file, creating its containing directory if needed. */
 export function writeFileSets(configPath: string, fileSets: FileSet[]): void {
 	const serializable = fileSets.map(serializeFileSet);
+	const targetPath: string = resolveWriteTarget(configPath);
+	const contents: string = JSON.stringify(serializable, null, 2) + '\n';
 
-	fs.mkdirSync(path.dirname(configPath), { recursive: true });
-	fs.writeFileSync(configPath, JSON.stringify(serializable, null, 2) + '\n', 'utf8');
+	fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+	// Written to a temporary file and renamed so other windows never read a half-written config.
+	const tempPath: string = `${targetPath}.${process.pid}.${randomUUID()}.tmp`;
+	try {
+		fs.writeFileSync(tempPath, contents, 'utf8');
+		try {
+			fs.renameSync(tempPath, targetPath);
+		} catch (error) {
+			const code: string | undefined = (error as NodeJS.ErrnoException).code;
+			if (code !== 'EPERM' && code !== 'EBUSY' && code !== 'EXDEV') {
+				throw error;
+			}
+			// Rename can fail on Windows over an open file or across devices; write in place instead.
+			fs.writeFileSync(targetPath, contents, 'utf8');
+			fs.rmSync(tempPath, { force: true });
+		}
+	} catch (error) {
+		fs.rmSync(tempPath, { force: true });
+		throw error;
+	}
 }
 
-/** The on-disk shape of a file set: optional fields are omitted rather than written as undefined/false. */
+/* The on-disk shape of a file set: optional fields are omitted rather than written as undefined/false. */
 export function serializeFileSet(fileSet: FileSet): Record<string, unknown> {
 	return {
 		...(fileSet.id ? { id: fileSet.id } : {}),

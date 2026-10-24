@@ -1,42 +1,36 @@
-import * as path from 'path';
-import * as vscode from 'vscode';
+import * as fs from 'fs';
+import * as os from 'os';
 import { FileSetPathEntry } from './config';
-import { expandDateTokens, naturalCompare, selectNewest, toRelativePath } from './core/setLogic';
+import { walkGlob, WalkResult } from './core/globWalk';
+import { expandDateTokens, naturalCompare, resolveFilePath, selectNewest } from './core/setLogic';
 
 export interface GlobResult {
-	/** The pattern after date tokens were filled in. */
+	/* The pattern after date tokens were filled in. */
 	pattern: string;
-	/** Workspace-relative matches in natural order, after any "newest" limit. */
+	/* Absolute matches in natural order, after any "newest" limit. */
 	matches: string[];
-	/** How many files matched before the "newest" limit. */
+	/* How many files matched before the "newest" limit. */
 	total: number;
+	/* True when the search was cut short by the directory entry limit. */
+	truncated: boolean;
 }
 
-const MAX_MATCHES = 100;
-
-/** Resolves a glob entry to its current matching files: date tokens filled in, newest-N applied. */
-export async function findGlobMatches(folder: vscode.WorkspaceFolder, entry: FileSetPathEntry): Promise<GlobResult> {
+/* Resolves a glob entry to its current matching files: date tokens filled in, newest-N applied. */
+export function findGlobMatches(entry: FileSetPathEntry): GlobResult {
 	const pattern: string = expandDateTokens(entry.path, new Date());
-	if (path.isAbsolute(pattern)) {
-		return { pattern, matches: [], total: 0 };
+	const found: WalkResult = walkGlob(resolveFilePath(os.homedir(), pattern), { caseSensitive: process.platform !== 'win32' });
+	if (entry.newest === undefined || found.matches.length <= entry.newest) {
+		return { pattern, matches: found.matches.sort(naturalCompare), total: found.matches.length, truncated: found.truncated };
 	}
 
-	const found: vscode.Uri[] = await vscode.workspace.findFiles(new vscode.RelativePattern(folder, pattern), undefined, MAX_MATCHES);
-	const relative: string[] = found.map((uri) => toRelativePath(folder.uri.fsPath, uri.fsPath));
-	if (entry.newest === undefined || relative.length <= entry.newest) {
-		return { pattern, matches: relative.sort(naturalCompare), total: relative.length };
-	}
-
-	const withTimes: { path: string; mtime: number }[] = await Promise.all(
-		found.map(async (uri) => {
-			let mtime: number = 0;
-			try {
-				mtime = (await vscode.workspace.fs.stat(uri)).mtime;
-			} catch {
-				// A file that vanished between the search and the stat just counts as oldest.
-			}
-			return { path: toRelativePath(folder.uri.fsPath, uri.fsPath), mtime };
-		})
-	);
-	return { pattern, matches: selectNewest(withTimes, entry.newest), total: relative.length };
+	const withTimes: { path: string; mtime: number }[] = found.matches.map((match) => {
+		let mtime: number = 0;
+		try {
+			mtime = fs.statSync(match).mtimeMs;
+		} catch {
+			// A file that vanished between the search and the stat just counts as oldest.
+		}
+		return { path: match, mtime };
+	});
+	return { pattern, matches: selectNewest(withTimes, entry.newest), total: found.matches.length, truncated: found.truncated };
 }
